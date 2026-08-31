@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import Navbar from "./components/Navbar";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -13,17 +14,24 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "KMUTNB Project Dashboard",
-  description: "Upload Excel files and manage academic data records",
+  title: "KMUTNB Research Hub | Applied Science Publication Management",
+  description: "Advanced Academic Research and Publication Management System, Faculty of Applied Science, KMUTNB",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
     <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      lang="th"
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased dark`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-screen flex flex-col bg-slate-950 text-slate-100 selection:bg-cyan-500/30 selection:text-cyan-200">
+        <Navbar />
+        <div className="flex-1">{children}</div>
+      </body>
     </html>
   );
 }
