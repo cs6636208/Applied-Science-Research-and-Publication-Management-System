@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BookOpen, UploadCloud, LayoutDashboard, Database } from "lucide-react";
+import { BookOpen, UploadCloud, LayoutDashboard, Database, Users } from "lucide-react";
 
 export default function Navbar() {
   const pathname = usePathname();
@@ -10,6 +10,7 @@ export default function Navbar() {
   const navItems = [
     { name: "Dashboard", href: "/", icon: LayoutDashboard },
     { name: "Publications", href: "/records", icon: BookOpen },
+    { name: "Researchers", href: "/researchers", icon: Users },
     { name: "Import Dataset", href: "/upload", icon: UploadCloud },
   ];
 

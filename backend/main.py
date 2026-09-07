@@ -6,8 +6,9 @@ import re
 import tempfile
 from contextlib import contextmanager
 
+from io import BytesIO
 import pandas as pd
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
@@ -518,8 +519,31 @@ def ingest_dataframe_to_db(df):
 
 
 # ============================================================================
-# API ENDPOINTS
+# API ENDPOINTS & CATALOG
 # ============================================================================
+
+@app.route("/api", methods=["GET"])
+def api_index():
+    """API catalog and documentation"""
+    return jsonify({
+        "name": "KMUTNB Applied Science Research Publication Management API",
+        "version": "2.0.0",
+        "status": "online",
+        "endpoints": [
+            {"path": "/api/health", "methods": ["GET"], "description": "System health check"},
+            {"path": "/api/stats", "methods": ["GET"], "description": "Dashboard KPI summary statistics"},
+            {"path": "/api/publications", "methods": ["GET", "POST"], "description": "List or create publications"},
+            {"path": "/api/publications/<id>", "methods": ["GET", "PUT", "DELETE"], "description": "Get, update, or delete publication"},
+            {"path": "/api/publications/export", "methods": ["GET"], "description": "Export publications to Excel (.xlsx) or CSV"},
+            {"path": "/api/upload", "methods": ["POST"], "description": "Upload and ingest Excel publication dataset"},
+            {"path": "/api/researchers", "methods": ["GET", "POST"], "description": "List or create researchers"},
+            {"path": "/api/researchers/<id>", "methods": ["GET", "PUT", "DELETE"], "description": "Get researcher profile, update, or delete"},
+            {"path": "/api/faculties", "methods": ["GET"], "description": "List faculties"},
+            {"path": "/api/journals", "methods": ["GET"], "description": "List journals"},
+            {"path": "/api/sdg-goals", "methods": ["GET"], "description": "List SDG goals"}
+        ]
+    })
+
 
 @app.route("/api/health", methods=["GET"])
 def health_check():
@@ -528,7 +552,131 @@ def health_check():
 
 
 # ============================================================================
-# PUBLICATIONS APIS (RICH RELATIONAL DATA)
+# RELATIONAL SYNC HELPERS (FOR CRUD APIS)
+# ============================================================================
+
+def upsert_journal_by_name(cur, journal_name, issn=None):
+    """Find existing journal by name or insert new one"""
+    if not journal_name:
+        return None
+    j_clean = journal_name.strip()
+    cur.execute("SELECT id, issn FROM journals WHERE LOWER(journal_name) = LOWER(%s) LIMIT 1;", (j_clean,))
+    existing = cur.fetchone()
+    if existing:
+        if issn and not existing.get("issn"):
+            cur.execute("UPDATE journals SET issn = %s WHERE id = %s;", (issn.strip(), existing["id"]))
+        return existing["id"]
+
+    cur.execute(
+        "INSERT INTO journals (journal_name, issn) VALUES (%s, %s) RETURNING id;",
+        (j_clean, issn.strip() if issn else None)
+    )
+    return cur.fetchone()["id"]
+
+
+def sync_publication_authors(cur, pub_id, authors_list):
+    """
+    Synchronize authors for a publication.
+    authors_list can be:
+    1) list of dicts: [{'researcher_id': 1, 'author_role': 'First Author', 'author_order': 1}, ...]
+    2) comma-separated string of names
+    Returns lead_researcher_id
+    """
+    cur.execute("DELETE FROM publication_authors WHERE publication_id = %s;", (pub_id,))
+    if not authors_list:
+        return None
+
+    items = []
+    if isinstance(authors_list, str):
+        parsed = split_authors(authors_list)
+        for idx, a in enumerate(parsed, start=1):
+            items.append({
+                "prefix_title": a.get("prefix"),
+                "full_name_th": a.get("full_name_th") or a.get("name"),
+                "full_name_en": a.get("full_name_en"),
+                "is_internal": a.get("is_internal", True),
+                "author_role": "First Author" if idx == 1 else "Co-Author",
+                "author_order": idx
+            })
+    elif isinstance(authors_list, list):
+        items = authors_list
+
+    lead_id = None
+    for idx, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        res_id = item.get("researcher_id")
+        if not res_id:
+            name_th = clean_str(item.get("full_name_th") or item.get("name") or "")
+            name_en = clean_str(item.get("full_name_en") or "")
+            if not name_th and not name_en:
+                continue
+            cur.execute("""
+                SELECT id FROM researchers 
+                WHERE (full_name_th IS NOT NULL AND LOWER(full_name_th) = LOWER(%s))
+                   OR (full_name_en IS NOT NULL AND LOWER(full_name_en) = LOWER(%s))
+                LIMIT 1;
+            """, (name_th or "", name_en or ""))
+            found = cur.fetchone()
+            if found:
+                res_id = found["id"]
+            else:
+                prefix = clean_str(item.get("prefix_title"))
+                is_internal = item.get("is_internal", True)
+                cur.execute("""
+                    INSERT INTO researchers (prefix_title, full_name_th, full_name_en, is_internal)
+                    VALUES (%s, %s, %s, %s) RETURNING id;
+                """, (prefix, name_th or name_en, name_en, is_internal))
+                res_id = cur.fetchone()["id"]
+
+        order = item.get("author_order", idx)
+        role = item.get("author_role") or ("First Author" if order == 1 else "Co-Author")
+
+        cur.execute("""
+            INSERT INTO publication_authors (publication_id, researcher_id, author_role, author_order)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT DO NOTHING;
+        """, (pub_id, res_id, role, order))
+
+        if order == 1 or lead_id is None:
+            lead_id = res_id
+
+    return lead_id
+
+
+def sync_publication_sdgs(cur, pub_id, sdg_items):
+    """Synchronize SDG goals for a publication"""
+    cur.execute("DELETE FROM publication_sdgs WHERE publication_id = %s;", (pub_id,))
+    if not sdg_items:
+        return
+
+    codes = []
+    if isinstance(sdg_items, str):
+        codes = parse_sdg_tags(sdg_items)
+    elif isinstance(sdg_items, list):
+        for item in sdg_items:
+            if isinstance(item, int):
+                codes.append(f"SDG-{item}")
+            elif isinstance(item, str):
+                for c in parse_sdg_tags(item):
+                    if c not in codes:
+                        codes.append(c)
+            elif isinstance(item, dict) and "code" in item:
+                codes.append(item["code"])
+
+    for code in set(codes):
+        cur.execute("SELECT id FROM sdg_goals WHERE sdg_code = %s;", (code,))
+        sdg_row = cur.fetchone()
+        if sdg_row:
+            cur.execute("""
+                INSERT INTO publication_sdgs (publication_id, sdg_id)
+                VALUES (%s, %s)
+                ON CONFLICT DO NOTHING;
+            """, (pub_id, sdg_row["id"]))
+
+
+# ============================================================================
+# PUBLICATIONS APIS (RICH RELATIONAL DATA & CRUD)
 # ============================================================================
 
 @app.route("/api/publications", methods=["GET"])
@@ -732,6 +880,430 @@ def get_publication_by_id(pub_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/publications", methods=["POST"])
+def create_publication():
+    """
+    Create a new publication with optional author and SDG mappings.
+    JSON payload:
+    - title_en (required if title_th not provided)
+    - title_th
+    - publication_type (default: 'Article')
+    - journal_name, issn, or journal_id
+    - volume, issue_number, page_range, doi, scopus_id, external_url
+    - quartile (Q1-Q4), percentile
+    - published_date (YYYY-MM-DD) or publication_year (YYYY)
+    - status ('Active')
+    - authors: list of authors or string
+    - sdgs: list of SDG codes or string
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        title_en = clean_str(data.get("title_en"))
+        title_th = clean_str(data.get("title_th"))
+
+        if not title_en and not title_th:
+            return jsonify({"error": "ต้องระบุชื่อบทความภาษาอังกฤษ (title_en) หรือภาษาไทย (title_th)"}), 400
+        if not title_en:
+            title_en = title_th
+
+        pub_type = clean_str(data.get("publication_type")) or "Article"
+        volume = clean_str(data.get("volume"))
+        issue = clean_str(data.get("issue_number") or data.get("issue"))
+        pages = clean_str(data.get("page_range") or data.get("pages"))
+        doi = clean_str(data.get("doi"))
+        scopus_id = clean_str(data.get("scopus_id"))
+        url = clean_str(data.get("external_url") or data.get("url"))
+        quartile = normalize_quartile(data.get("quartile"))
+        status = clean_str(data.get("status")) or "Active"
+
+        percentile = None
+        if data.get("percentile") is not None:
+            try:
+                percentile = float(str(data.get("percentile")).replace("%", "").strip())
+            except (ValueError, TypeError):
+                pass
+
+        published_date = None
+        if data.get("published_date"):
+            try:
+                published_date = datetime.date.fromisoformat(str(data.get("published_date"))[:10])
+            except (ValueError, TypeError):
+                pass
+        elif data.get("publication_year"):
+            try:
+                y = int(data.get("publication_year"))
+                if y > 2400:
+                    y -= 543
+                if 1900 <= y <= 2100:
+                    published_date = datetime.date(y, 1, 1)
+            except (ValueError, TypeError):
+                pass
+
+        with get_db_connection(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                # Resolve journal
+                journal_id = data.get("journal_id")
+                if not journal_id and data.get("journal_name"):
+                    journal_id = upsert_journal_by_name(cur, data.get("journal_name"), data.get("issn"))
+
+                cur.execute("""
+                    INSERT INTO publications 
+                    (title_th, title_en, publication_type, journal_id, volume, issue_number,
+                     page_range, doi, scopus_id, external_url, quartile, percentile, 
+                     published_date, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id;
+                """, (
+                    title_th, title_en, pub_type, journal_id, volume, issue,
+                    pages, doi, scopus_id, url, quartile, percentile, published_date, status
+                ))
+                new_pub_id = cur.fetchone()["id"]
+
+                # Sync authors
+                lead_researcher_id = sync_publication_authors(cur, new_pub_id, data.get("authors"))
+                if lead_researcher_id:
+                    cur.execute("UPDATE publications SET lead_researcher_id = %s WHERE id = %s;", (lead_researcher_id, new_pub_id))
+
+                # Sync SDGs
+                sync_publication_sdgs(cur, new_pub_id, data.get("sdgs"))
+
+            conn.commit()
+
+        return jsonify({
+            "success": True,
+            "id": new_pub_id,
+            "message": "สร้างผลงานวิจัยใหม่สำเร็จ"
+        }), 201
+    except Exception as e:
+        logger.error(f"Error creating publication: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/publications/<int:pub_id>", methods=["PUT"])
+def update_publication(pub_id):
+    """Update publication fields, journal, authors, and SDGs"""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        if not data:
+            return jsonify({"error": "No update data provided"}), 400
+
+        with get_db_connection(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                # Check existence
+                cur.execute("SELECT id FROM publications WHERE id = %s;", (pub_id,))
+                if not cur.fetchone():
+                    return jsonify({"error": "Publication not found"}), 404
+
+                fields = []
+                params = []
+
+                if "title_en" in data:
+                    fields.append("title_en = %s")
+                    params.append(clean_str(data["title_en"]))
+                if "title_th" in data:
+                    fields.append("title_th = %s")
+                    params.append(clean_str(data["title_th"]))
+                if "publication_type" in data:
+                    fields.append("publication_type = %s")
+                    params.append(clean_str(data["publication_type"]) or "Article")
+                if "volume" in data:
+                    fields.append("volume = %s")
+                    params.append(clean_str(data["volume"]))
+                if "issue_number" in data or "issue" in data:
+                    fields.append("issue_number = %s")
+                    params.append(clean_str(data.get("issue_number") or data.get("issue")))
+                if "page_range" in data or "pages" in data:
+                    fields.append("page_range = %s")
+                    params.append(clean_str(data.get("page_range") or data.get("pages")))
+                if "doi" in data:
+                    fields.append("doi = %s")
+                    params.append(clean_str(data["doi"]))
+                if "scopus_id" in data:
+                    fields.append("scopus_id = %s")
+                    params.append(clean_str(data["scopus_id"]))
+                if "external_url" in data or "url" in data:
+                    fields.append("external_url = %s")
+                    params.append(clean_str(data.get("external_url") or data.get("url")))
+                if "quartile" in data:
+                    fields.append("quartile = %s")
+                    params.append(normalize_quartile(data["quartile"]))
+                if "percentile" in data:
+                    p_val = None
+                    if data["percentile"] is not None:
+                        try:
+                            p_val = float(str(data["percentile"]).replace("%", "").strip())
+                        except (ValueError, TypeError):
+                            pass
+                    fields.append("percentile = %s")
+                    params.append(p_val)
+                if "status" in data:
+                    fields.append("status = %s")
+                    params.append(clean_str(data["status"]) or "Active")
+
+                if "published_date" in data:
+                    p_date = None
+                    if data["published_date"]:
+                        try:
+                            p_date = datetime.date.fromisoformat(str(data["published_date"])[:10])
+                        except (ValueError, TypeError):
+                            pass
+                    fields.append("published_date = %s")
+                    params.append(p_date)
+                elif "publication_year" in data:
+                    p_date = None
+                    if data["publication_year"]:
+                        try:
+                            y = int(data["publication_year"])
+                            if y > 2400:
+                                y -= 543
+                            if 1900 <= y <= 2100:
+                                p_date = datetime.date(y, 1, 1)
+                        except (ValueError, TypeError):
+                            pass
+                    fields.append("published_date = %s")
+                    params.append(p_date)
+
+                # Journal handling
+                if "journal_id" in data and data["journal_id"] is not None:
+                    fields.append("journal_id = %s")
+                    params.append(data["journal_id"])
+                elif "journal_name" in data:
+                    j_id = upsert_journal_by_name(cur, data.get("journal_name"), data.get("issn"))
+                    fields.append("journal_id = %s")
+                    params.append(j_id)
+
+                # Always update updated_at
+                fields.append("updated_at = NOW()")
+
+                if fields:
+                    query = f"UPDATE publications SET {', '.join(fields)} WHERE id = %s;"
+                    params.append(pub_id)
+                    cur.execute(query, tuple(params))
+
+                # Update authors if passed
+                if "authors" in data:
+                    lead_id = sync_publication_authors(cur, pub_id, data["authors"])
+                    if lead_id:
+                        cur.execute("UPDATE publications SET lead_researcher_id = %s WHERE id = %s;", (lead_id, pub_id))
+
+                # Update SDGs if passed
+                if "sdgs" in data:
+                    sync_publication_sdgs(cur, pub_id, data["sdgs"])
+
+            conn.commit()
+
+        return jsonify({
+            "success": True,
+            "id": pub_id,
+            "message": "อัปเดตข้อมูลผลงานวิจัยสำเร็จ"
+        })
+    except Exception as e:
+        logger.error(f"Error updating publication {pub_id}: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/publications/<int:pub_id>", methods=["DELETE"])
+def delete_publication(pub_id):
+    """Delete a publication and associated relational mappings"""
+    try:
+        with get_db_connection(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, title_en FROM publications WHERE id = %s;", (pub_id,))
+                pub = cur.fetchone()
+                if not pub:
+                    return jsonify({"error": "Publication not found"}), 404
+
+                # Delete legacy copy if matching paper_id
+                try:
+                    cur.execute("DELETE FROM academic_papers WHERE paper_id = %s;", (str(pub_id),))
+                except Exception:
+                    pass
+
+                # Delete publication (cascades to publication_authors and publication_sdgs)
+                cur.execute("DELETE FROM publications WHERE id = %s;", (pub_id,))
+            conn.commit()
+
+        return jsonify({
+            "success": True,
+            "id": pub_id,
+            "message": "ลบผลงานวิจัยเรียบร้อยแล้ว"
+        })
+    except Exception as e:
+        logger.error(f"Error deleting publication {pub_id}: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/publications/export", methods=["GET"])
+def export_publications():
+    """
+    Export filtered publications to Excel (.xlsx) or CSV:
+    Query params:
+    - q: search keyword
+    - quartile: filter Q1-Q4
+    - year: filter year
+    - sdg: filter SDG
+    - format: 'xlsx' (default) or 'csv'
+    """
+    try:
+        q = request.args.get("q", "").strip()
+        quartile = request.args.get("quartile", "").strip().upper()
+        year = request.args.get("year", "").strip()
+        sdg = request.args.get("sdg", "").strip().upper()
+        export_format = request.args.get("format", "xlsx").strip().lower()
+
+        query = """
+            SELECT 
+                p.id,
+                p.title_en,
+                p.title_th,
+                p.publication_type,
+                p.volume,
+                p.issue_number,
+                p.page_range,
+                p.doi,
+                p.scopus_id,
+                p.external_url,
+                p.quartile,
+                p.percentile,
+                p.published_date,
+                EXTRACT(YEAR FROM p.published_date)::INT as publication_year,
+                p.status,
+                j.journal_name,
+                j.issn,
+                r_lead.full_name_th as lead_researcher_name,
+                COALESCE(
+                    (
+                        SELECT string_agg(
+                            COALESCE(r.full_name_th, r.full_name_en), ', ' 
+                            ORDER BY pa.author_order ASC
+                        )
+                        FROM publication_authors pa
+                        JOIN researchers r ON pa.researcher_id = r.id
+                        WHERE pa.publication_id = p.id
+                    ), ''
+                ) as authors_str,
+                COALESCE(
+                    (
+                        SELECT string_agg(g.sdg_code, ', ' ORDER BY g.id ASC)
+                        FROM publication_sdgs ps
+                        JOIN sdg_goals g ON ps.sdg_id = g.id
+                        WHERE ps.publication_id = p.id
+                    ), ''
+                ) as sdgs_str
+            FROM publications p
+            LEFT JOIN journals j ON p.journal_id = j.id
+            LEFT JOIN researchers r_lead ON p.lead_researcher_id = r_lead.id
+            WHERE 1=1
+        """
+        params = []
+
+        if q:
+            query += """
+                AND (
+                    p.title_en ILIKE %s 
+                    OR p.title_th ILIKE %s 
+                    OR j.journal_name ILIKE %s 
+                    OR p.doi ILIKE %s 
+                    OR EXISTS (
+                        SELECT 1 FROM publication_authors pa2
+                        JOIN researchers r2 ON pa2.researcher_id = r2.id
+                        WHERE pa2.publication_id = p.id
+                        AND (r2.full_name_th ILIKE %s OR r2.full_name_en ILIKE %s)
+                    )
+                )
+            """
+            search_param = f"%{q}%"
+            params.extend([search_param, search_param, search_param, search_param, search_param, search_param])
+
+        if quartile and quartile != "ALL":
+            query += " AND p.quartile = %s"
+            params.append(quartile)
+
+        if year and year != "ALL":
+            try:
+                y_val = int(year)
+                query += " AND EXTRACT(YEAR FROM p.published_date) = %s"
+                params.append(y_val)
+            except ValueError:
+                pass
+
+        if sdg and sdg != "ALL":
+            query += """
+                AND EXISTS (
+                    SELECT 1 FROM publication_sdgs ps2
+                    JOIN sdg_goals g2 ON ps2.sdg_id = g2.id
+                    WHERE ps2.publication_id = p.id
+                    AND (g2.sdg_code = %s OR g2.sdg_code = %s)
+                )
+            """
+            clean_sdg = sdg if sdg.startswith("SDG-") else f"SDG-{sdg}"
+            params.extend([clean_sdg, sdg])
+
+        query += " ORDER BY p.published_date DESC NULLS LAST, p.id DESC;"
+
+        with get_db_connection(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, tuple(params))
+                rows = cur.fetchall()
+
+        # Build clean export rows
+        export_data = []
+        for idx, r in enumerate(rows, start=1):
+            export_data.append({
+                "ลำดับ": idx,
+                "ชื่องานวิจัย (EN)": r["title_en"] or "",
+                "ชื่องานวิจัย (TH)": r["title_th"] or "",
+                "คณะผู้วิจัย": r["authors_str"] or "",
+                "หัวหน้าทีมวิจัย": r["lead_researcher_name"] or "",
+                "วารสาร": r["journal_name"] or "",
+                "ISSN": r["issn"] or "",
+                "ปีที่ตีพิมพ์": r["publication_year"] or "",
+                "วันที่ตีพิมพ์": str(r["published_date"]) if r["published_date"] else "",
+                "Quartile": r["quartile"] or "",
+                "Percentile (%)": float(r["percentile"]) if r["percentile"] is not None else "",
+                "ประเภทผลงาน": r["publication_type"] or "Article",
+                "เล่มที่ (Volume)": r["volume"] or "",
+                "ฉบับที่ (Issue)": r["issue_number"] or "",
+                "เลขหน้า (Pages)": r["page_range"] or "",
+                "DOI": r["doi"] or "",
+                "Scopus ID": r["scopus_id"] or "",
+                "URL": r["external_url"] or "",
+                "เป้าหมาย SDG": r["sdgs_str"] or "",
+                "สถานะ": r["status"] or "Active",
+            })
+
+        df_export = pd.DataFrame(export_data)
+        file_date = datetime.date.today().strftime("%Y%m%d")
+
+        if export_format == "csv":
+            csv_str = df_export.to_csv(index=False, encoding="utf-8-sig")
+            return send_file(
+                BytesIO(csv_str.encode("utf-8-sig")),
+                mimetype="text/csv; charset=utf-8",
+                as_attachment=True,
+                download_name=f"kmutnb_publications_{file_date}.csv"
+            )
+        else:
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                df_export.to_excel(writer, index=False, sheet_name="Publications")
+                worksheet = writer.sheets["Publications"]
+                for col in worksheet.columns:
+                    max_len = max(len(str(cell.value or "")) for cell in col)
+                    col_letter = col[0].column_letter
+                    worksheet.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 60)
+            output.seek(0)
+            return send_file(
+                output,
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                as_attachment=True,
+                download_name=f"kmutnb_publications_{file_date}.xlsx"
+            )
+    except Exception as e:
+        logger.error(f"Error exporting publications: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
 # ============================================================================
 # STATS & DASHBOARD ANALYTICS API
 # ============================================================================
@@ -889,6 +1461,168 @@ def get_researchers():
                 return jsonify([dict(row) for row in records])
     except Exception as e:
         logger.error(f"Error fetching researchers: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/researchers/<int:researcher_id>", methods=["GET"])
+def get_researcher_profile(researcher_id):
+    """Get researcher profile, statistics, and list of authored publications"""
+    try:
+        with get_db_connection(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                # 1. Researcher basic info
+                cur.execute("""
+                    SELECT 
+                        r.*, 
+                        f.name_th as faculty_name_th,
+                        f.name_en as faculty_name_en
+                    FROM researchers r 
+                    LEFT JOIN faculties f ON r.faculty_id = f.id 
+                    WHERE r.id = %s;
+                """, (researcher_id,))
+                researcher = cur.fetchone()
+                if not researcher:
+                    return jsonify({"error": "Researcher not found"}), 404
+
+                # 2. Associated publications
+                cur.execute("""
+                    SELECT 
+                        p.id,
+                        p.title_en,
+                        p.title_th,
+                        p.publication_type,
+                        p.quartile,
+                        p.percentile,
+                        p.published_date,
+                        EXTRACT(YEAR FROM p.published_date)::INT as publication_year,
+                        p.doi,
+                        p.scopus_id,
+                        j.journal_name,
+                        pa.author_role,
+                        pa.author_order
+                    FROM publication_authors pa
+                    JOIN publications p ON pa.publication_id = p.id
+                    LEFT JOIN journals j ON p.journal_id = j.id
+                    WHERE pa.researcher_id = %s
+                    ORDER BY p.published_date DESC NULLS LAST, p.id DESC;
+                """, (researcher_id,))
+                pubs = [dict(row) for row in cur.fetchall()]
+
+                # 3. Compute stats
+                q_counts = {"Q1": 0, "Q2": 0, "Q3": 0, "Q4": 0, "Unranked": 0}
+                for p in pubs:
+                    q = p.get("quartile") or "Unranked"
+                    if q in q_counts:
+                        q_counts[q] += 1
+                    else:
+                        q_counts["Unranked"] += 1
+
+                res_data = dict(researcher)
+                res_data["total_publications"] = len(pubs)
+                res_data["quartile_counts"] = q_counts
+                res_data["publications"] = pubs
+                return jsonify(res_data)
+    except Exception as e:
+        logger.error(f"Error fetching researcher {researcher_id}: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/researchers", methods=["POST"])
+def create_researcher():
+    """Create a new researcher record"""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        name_th = clean_str(data.get("full_name_th"))
+        name_en = clean_str(data.get("full_name_en"))
+        if not name_th and not name_en:
+            return jsonify({"error": "ต้องระบุชื่อ-นามสกุลนักวิจัย (full_name_th หรือ full_name_en)"}), 400
+
+        prefix = clean_str(data.get("prefix_title"))
+        position = clean_str(data.get("academic_position"))
+        pos_type = clean_str(data.get("position_type"))
+        faculty_id = data.get("faculty_id")
+        is_internal = data.get("is_internal", True)
+
+        with get_db_connection(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO researchers 
+                    (prefix_title, full_name_th, full_name_en, academic_position, position_type, faculty_id, is_internal)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING id;
+                """, (prefix, name_th or name_en, name_en, position, pos_type, faculty_id, is_internal))
+                new_id = cur.fetchone()["id"]
+            conn.commit()
+
+        return jsonify({
+            "success": True,
+            "id": new_id,
+            "message": "เพิ่มข้อมูลนักวิจัยสำเร็จ"
+        }), 201
+    except Exception as e:
+        logger.error(f"Error creating researcher: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/researchers/<int:researcher_id>", methods=["PUT"])
+def update_researcher(researcher_id):
+    """Update researcher record"""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        if not data:
+            return jsonify({"error": "No update data provided"}), 400
+
+        fields = []
+        params = []
+        for field in ["prefix_title", "full_name_th", "full_name_en", "academic_position", "position_type", "faculty_id", "is_internal"]:
+            if field in data:
+                fields.append(f"{field} = %s")
+                params.append(data[field])
+
+        if not fields:
+            return jsonify({"error": "No valid fields to update"}), 400
+
+        with get_db_connection(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM researchers WHERE id = %s;", (researcher_id,))
+                if not cur.fetchone():
+                    return jsonify({"error": "Researcher not found"}), 404
+
+                query = f"UPDATE researchers SET {', '.join(fields)} WHERE id = %s;"
+                params.append(researcher_id)
+                cur.execute(query, tuple(params))
+            conn.commit()
+
+        return jsonify({
+            "success": True,
+            "id": researcher_id,
+            "message": "แก้ไขข้อมูลนักวิจัยสำเร็จ"
+        })
+    except Exception as e:
+        logger.error(f"Error updating researcher {researcher_id}: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/researchers/<int:researcher_id>", methods=["DELETE"])
+def delete_researcher(researcher_id):
+    """Delete researcher record"""
+    try:
+        with get_db_connection(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM researchers WHERE id = %s;", (researcher_id,))
+                if not cur.fetchone():
+                    return jsonify({"error": "Researcher not found"}), 404
+
+                cur.execute("DELETE FROM researchers WHERE id = %s;", (researcher_id,))
+            conn.commit()
+
+        return jsonify({
+            "success": True,
+            "id": researcher_id,
+            "message": "ลบข้อมูลนักวิจัยสำเร็จ"
+        })
+    except Exception as e:
+        logger.error(f"Error deleting researcher {researcher_id}: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 

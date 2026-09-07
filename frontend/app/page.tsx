@@ -74,16 +74,16 @@ export default function HomePage() {
             <div className="lg:col-span-8 space-y-5">
               <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3.5 py-1 text-xs font-semibold uppercase tracking-wider text-cyan-300">
                 <Sparkles className="h-3.5 w-3.5 text-cyan-400" />
-                <span>KMUTNB Applied Science Research Hub</span>
+                <span>Applied Science Research and Publication Management System</span>
               </div>
               <h1 className="text-3xl font-extrabold tracking-tight text-white sm:text-4xl lg:text-5xl leading-tight">
-                ระบบจัดการและติดตาม <br />
+                ระบบบริหารจัดการ <br />
                 <span className="bg-gradient-to-r from-cyan-400 via-teal-300 to-blue-500 bg-clip-text text-transparent">
-                  ผลงานวิจัยและการตีพิมพ์วิชาการ
+                  งานวิจัยและผลงานตีพิมพ์คณะวิทยาศาสตร์ประยุกต์
                 </span>
               </h1>
               <p className="max-w-2xl text-base sm:text-lg text-slate-300 leading-relaxed">
-                ศูนย์กลางฐานข้อมูลงานวิจัย คณะวิทยาศาสตร์ประยุกต์ มหาวิทยาลัยเทคโนโลยีพระจอมเกล้าพระนครเหนือ 
+                ศูนย์กลางฐานข้อมูลงานวิจัย คณะวิทยาศาสตร์ประยุกต์ มหาวิทยาลัยเทคโนโลยีพระจอมเกล้าพระนครเหนือ
                 รองรับการนำเข้าไฟล์ Excel, จัดกลุ่ม Quartile (Q1–Q4), เชื่อมโยง SDG Goals และตรวจสอบความก้าวหน้าของผลงาน
               </p>
 
