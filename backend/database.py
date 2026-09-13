@@ -157,6 +157,174 @@ CREATE_ACADEMIC_PAPERS_TABLE = """
     );
 """
 
+# Domain tables for the complete KMUTNB source catalogue. These tables are
+# additive so existing publication APIs and legacy data remain compatible.
+CREATE_RESEARCH_DOMAIN_TABLES = [
+    """
+    CREATE TABLE IF NOT EXISTS departments (
+        id BIGSERIAL PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS organizations (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        organization_type VARCHAR(50),
+        country TEXT,
+        UNIQUE (name)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS import_batches (
+        id BIGSERIAL PRIMARY KEY,
+        source_file TEXT NOT NULL,
+        dataset_type VARCHAR(50) NOT NULL,
+        file_hash CHAR(64) NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'completed',
+        row_count INTEGER NOT NULL DEFAULT 0,
+        error_count INTEGER NOT NULL DEFAULT 0,
+        imported_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE (source_file, file_hash)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS import_rows (
+        id BIGSERIAL PRIMARY KEY,
+        batch_id BIGINT NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+        sheet_name TEXT NOT NULL,
+        source_row INTEGER NOT NULL,
+        row_hash CHAR(64) NOT NULL,
+        dataset_type VARCHAR(50) NOT NULL,
+        raw_data JSONB NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'accepted',
+        error_message TEXT,
+        UNIQUE (batch_id, sheet_name, source_row, row_hash)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS funding_sources (
+        id BIGSERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        source_type VARCHAR(30) NOT NULL DEFAULT 'UNKNOWN',
+        UNIQUE (name, source_type)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS research_projects (
+        id BIGSERIAL PRIMARY KEY,
+        project_code TEXT,
+        title_th TEXT NOT NULL,
+        title_en TEXT,
+        project_type TEXT,
+        fiscal_year INTEGER,
+        start_date DATE,
+        end_date DATE,
+        budget NUMERIC(14, 2),
+        status TEXT,
+        funding_source_id BIGINT REFERENCES funding_sources(id) ON DELETE SET NULL,
+        source_row_id BIGINT REFERENCES import_rows(id) ON DELETE SET NULL,
+        fingerprint CHAR(64) NOT NULL UNIQUE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS project_researchers (
+        project_id BIGINT NOT NULL REFERENCES research_projects(id) ON DELETE CASCADE,
+        researcher_id INT NOT NULL REFERENCES researchers(id) ON DELETE CASCADE,
+        role VARCHAR(100),
+        PRIMARY KEY (project_id, researcher_id)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS research_units (
+        id BIGSERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        unit_type TEXT,
+        department_name TEXT,
+        description TEXT,
+        source_row_id BIGINT REFERENCES import_rows(id) ON DELETE SET NULL,
+        UNIQUE (name)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS research_unit_members (
+        unit_id BIGINT NOT NULL REFERENCES research_units(id) ON DELETE CASCADE,
+        researcher_id INT NOT NULL REFERENCES researchers(id) ON DELETE CASCADE,
+        role VARCHAR(100),
+        PRIMARY KEY (unit_id, researcher_id)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS publishers (
+        id BIGSERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        country TEXT,
+        source_row_id BIGINT REFERENCES import_rows(id) ON DELETE SET NULL,
+        UNIQUE (name)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS research_external_people (
+        id BIGSERIAL PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        organization TEXT,
+        country TEXT,
+        source_row_id BIGINT REFERENCES import_rows(id) ON DELETE SET NULL,
+        UNIQUE (display_name, organization)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS publication_source_rows (
+        publication_id INT NOT NULL REFERENCES publications(id) ON DELETE CASCADE,
+        source_row_id BIGINT NOT NULL REFERENCES import_rows(id) ON DELETE CASCADE,
+        PRIMARY KEY (publication_id, source_row_id)
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS publication_departments (
+        publication_id INT NOT NULL REFERENCES publications(id) ON DELETE CASCADE,
+        department_id BIGINT NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+        author_count INTEGER NOT NULL DEFAULT 0,
+        is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+        PRIMARY KEY (publication_id, department_id)
+    );
+    """,
+]
+
+CREATE_DOMAIN_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_import_rows_type ON import_rows(dataset_type);",
+    "CREATE INDEX IF NOT EXISTS idx_import_rows_hash ON import_rows(row_hash);",
+    "CREATE INDEX IF NOT EXISTS idx_projects_year ON research_projects(fiscal_year);",
+    "CREATE INDEX IF NOT EXISTS idx_projects_code ON research_projects(project_code);",
+    "CREATE INDEX IF NOT EXISTS idx_project_researchers_researcher ON project_researchers(researcher_id);",
+    "CREATE INDEX IF NOT EXISTS idx_units_name ON research_units USING gin (to_tsvector('simple', name));",
+    "CREATE INDEX IF NOT EXISTS idx_researchers_department_id ON researchers(department_id);",
+    "CREATE INDEX IF NOT EXISTS idx_publication_departments_department ON publication_departments(department_id);",
+]
+
+PUBLICATION_TYPE_MIGRATION = """
+    UPDATE publications
+    SET publication_type = CASE
+        WHEN LOWER(TRIM(publication_type)) IN ('article', 'journal article', 'บทความวารสาร', 'บทความวิชาการ')
+            THEN 'Journal Article'
+        WHEN LOWER(TRIM(publication_type)) LIKE '%conference%'
+          OR LOWER(TRIM(publication_type)) LIKE '%proceeding%'
+          OR LOWER(TRIM(publication_type)) LIKE '%ประชุม%'
+            THEN 'Conference Proceeding'
+        ELSE publication_type
+    END
+    WHERE publication_type IS NOT NULL;
+    ALTER TABLE publications ALTER COLUMN publication_type SET DEFAULT 'Journal Article';
+"""
+
+DEPARTMENT_MIGRATION = """
+    ALTER TABLE researchers
+    ADD COLUMN IF NOT EXISTS department_id BIGINT REFERENCES departments(id) ON DELETE SET NULL;
+"""
+
 # ============================================================================
 # CONNECTION MANAGEMENT
 # ============================================================================
@@ -244,6 +412,28 @@ def create_tables():
                         cur.execute(index_sql)
                     except psycopg2.Error as e:
                         logger.warning(f"Could not create index: {e}")
+
+                for create_sql in CREATE_RESEARCH_DOMAIN_TABLES:
+                    try:
+                        cur.execute(create_sql)
+                    except psycopg2.Error as e:
+                        logger.warning(f"Could not create domain table: {e}")
+
+                try:
+                    cur.execute(DEPARTMENT_MIGRATION)
+                except psycopg2.Error as e:
+                    logger.warning(f"Could not add researcher department relation: {e}")
+
+                for index_sql in CREATE_DOMAIN_INDEXES:
+                    try:
+                        cur.execute(index_sql)
+                    except psycopg2.Error as e:
+                        logger.warning(f"Could not create domain index: {e}")
+
+                try:
+                    cur.execute(PUBLICATION_TYPE_MIGRATION)
+                except psycopg2.Error as e:
+                    logger.warning(f"Could not normalize publication types: {e}")
                 
                 conn.commit()
                 logger.info("✓ All tables and indexes created successfully")

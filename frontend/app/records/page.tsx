@@ -34,6 +34,13 @@ type Author = {
   author_role: string;
   author_order: number;
   faculty_name?: string;
+  department_name?: string | null;
+};
+
+type PublicationDepartment = {
+  name: string;
+  author_count: number;
+  is_primary: boolean;
 };
 
 type SDG = {
@@ -64,6 +71,7 @@ type Publication = {
   lead_researcher_name?: string | null;
   authors: Author[];
   sdgs: SDG[];
+  departments?: PublicationDepartment[];
 };
 
 export default function RecordsPage() {
@@ -71,6 +79,9 @@ export default function RecordsPage() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedQuartile, setSelectedQuartile] = useState<string>("ALL");
+  const [selectedPublicationType, setSelectedPublicationType] = useState<string>("ALL");
+  const [selectedDepartment, setSelectedDepartment] = useState<string>("ALL");
+  const [departments, setDepartments] = useState<string[]>([]);
   const [selectedYear, setSelectedYear] = useState<string>("ALL");
   const [selectedSdg, setSelectedSdg] = useState<string>("ALL");
   const [activeModalPub, setActiveModalPub] = useState<Publication | null>(null);
@@ -108,6 +119,8 @@ export default function RecordsPage() {
       const params = new URLSearchParams();
       if (searchQuery.trim()) params.append("q", searchQuery.trim());
       if (selectedQuartile !== "ALL") params.append("quartile", selectedQuartile);
+      if (selectedPublicationType !== "ALL") params.append("publication_type", selectedPublicationType);
+      if (selectedDepartment !== "ALL") params.append("department", selectedDepartment);
       if (selectedYear !== "ALL") params.append("year", selectedYear);
       if (selectedSdg !== "ALL") params.append("sdg", selectedSdg);
 
@@ -131,7 +144,14 @@ export default function RecordsPage() {
       fetchPublications();
     }, 250);
     return () => clearTimeout(timer);
-  }, [searchQuery, selectedQuartile, selectedYear, selectedSdg]);
+  }, [searchQuery, selectedQuartile, selectedPublicationType, selectedDepartment, selectedYear, selectedSdg]);
+
+  useEffect(() => {
+    fetch("http://localhost:5000/api/departments")
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => setDepartments(Array.isArray(data) ? data.map((item) => item.name) : []))
+      .catch(() => setDepartments([]));
+  }, []);
 
   // Toast Auto-Dismiss
   useEffect(() => {
@@ -171,6 +191,8 @@ export default function RecordsPage() {
     const params = new URLSearchParams();
     if (searchQuery.trim()) params.append("q", searchQuery.trim());
     if (selectedQuartile !== "ALL") params.append("quartile", selectedQuartile);
+    if (selectedPublicationType !== "ALL") params.append("publication_type", selectedPublicationType);
+    if (selectedDepartment !== "ALL") params.append("department", selectedDepartment);
     if (selectedYear !== "ALL") params.append("year", selectedYear);
     if (selectedSdg !== "ALL") params.append("sdg", selectedSdg);
     params.append("format", format);
@@ -444,6 +466,31 @@ export default function RecordsPage() {
 
           {/* Filter Pills and Dropdowns */}
           <div className="flex flex-wrap items-center justify-between gap-4 pt-1">
+            <label className="flex items-center gap-2 text-xs font-semibold text-slate-400">
+              ประเภท:
+              <select
+                value={selectedPublicationType}
+                onChange={(e) => setSelectedPublicationType(e.target.value)}
+                className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 focus:border-cyan-500 focus:outline-none"
+              >
+                <option value="ALL">ทั้งหมด</option>
+                <option value="Journal Article">บทความวารสาร</option>
+                <option value="Conference Proceeding">บทความประชุมวิชาการ</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-xs font-semibold text-slate-400">
+              ภาควิชา:
+              <select
+                value={selectedDepartment}
+                onChange={(e) => setSelectedDepartment(e.target.value)}
+                className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs text-slate-200 focus:border-cyan-500 focus:outline-none"
+              >
+                <option value="ALL">ทั้งหมด</option>
+                {departments.map((department) => (
+                  <option key={department} value={department}>{department}</option>
+                ))}
+              </select>
+            </label>
             {/* Quartile Pills */}
             <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
               <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 mr-1 hidden sm:inline">
@@ -513,11 +560,13 @@ export default function RecordsPage() {
           <span>
             พบผลงานทั้งหมด <strong className="text-white">{publications.length}</strong> รายการ
           </span>
-          {(searchQuery || selectedQuartile !== "ALL" || selectedYear !== "ALL" || selectedSdg !== "ALL") && (
+          {(searchQuery || selectedQuartile !== "ALL" || selectedPublicationType !== "ALL" || selectedDepartment !== "ALL" || selectedYear !== "ALL" || selectedSdg !== "ALL") && (
             <button
               onClick={() => {
                 setSearchQuery("");
                 setSelectedQuartile("ALL");
+                setSelectedPublicationType("ALL");
+                setSelectedDepartment("ALL");
                 setSelectedYear("ALL");
                 setSelectedSdg("ALL");
               }}
@@ -586,6 +635,19 @@ export default function RecordsPage() {
                         <span className="rounded-md border border-slate-700/60 bg-slate-800/40 px-2 py-0.5 text-slate-400">
                           {pub.publication_type || "Article"}
                         </span>
+
+                        {pub.departments?.map((department) => (
+                          <span
+                            key={department.name}
+                            className={`rounded-md border px-2 py-0.5 ${
+                              department.is_primary
+                                ? "border-cyan-500/40 bg-cyan-500/10 text-cyan-300"
+                                : "border-slate-700 bg-slate-800/60 text-slate-400"
+                            }`}
+                          >
+                            {department.name}
+                          </span>
+                        ))}
 
                         {pub.publication_year && (
                           <span className="inline-flex items-center gap-1 text-slate-400">
@@ -960,8 +1022,8 @@ export default function RecordsPage() {
                         onChange={(e) => setFormData({ ...formData, publication_type: e.target.value })}
                         className="w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-sm text-white focus:border-cyan-500 focus:outline-none"
                       >
-                        <option value="Article">Article (บทความวิชาการ)</option>
-                        <option value="Conference Paper">Conference Paper (การประชุมวิชาการ)</option>
+                        <option value="Journal Article">Journal Article (บทความวารสาร)</option>
+                        <option value="Conference Proceeding">Conference Proceeding (บทความประชุมวิชาการ)</option>
                         <option value="Review">Review Paper</option>
                         <option value="Book Chapter">Book Chapter</option>
                       </select>

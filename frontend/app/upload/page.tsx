@@ -18,11 +18,15 @@ import {
 } from "lucide-react";
 
 type IngestionStats = {
-  inserted_publications: number;
-  inserted_researchers: number;
-  inserted_journals: number;
-  inserted_authors_links: number;
-  inserted_sdgs: number;
+  inserted_publications?: number;
+  skipped_publications?: number;
+  inserted_researchers?: number;
+  inserted_journals?: number;
+  inserted_authors_links?: number;
+  inserted_sdgs?: number;
+  projects?: number;
+  rows?: number;
+  accepted?: number;
 };
 
 type UploadResult = {
@@ -96,10 +100,10 @@ export default function UploadPage() {
             <span>Excel Importer & Relational Mapper</span>
           </div>
           <h1 className="text-3xl font-extrabold text-white sm:text-4xl tracking-tight">
-            นำเข้าชุดข้อมูลผลงานวิจัย (Excel)
+            นำเข้าข้อมูลวิจัยและทุน (Excel)
           </h1>
           <p className="max-w-xl mx-auto text-sm sm:text-base text-slate-400">
-            ระบบจะทำการวิเคราะห์หัวตาราง แยกรายชื่อผู้แต่ง บันทึกวารสาร และจับคู่เป้าหมาย SDG ให้อัตโนมัติ
+            ระบบวิเคราะห์หัวตารางหลายรูปแบบ แยกรายชื่อผู้แต่ง และนำเข้าทุนภายใน/ภายนอกหลาย Sheet ให้อัตโนมัติ
           </p>
         </div>
 
@@ -199,6 +203,10 @@ export default function UploadPage() {
                   "Scopus ID",
                   "SDG Goals",
                   "Volume / Issue / Pages",
+                  "ชื่อโครงการ / หัวหน้าโครงการ",
+                  "ประเภททุน / แหล่งทุน",
+                  "งบประมาณสนับสนุน",
+                  "ปีงบประมาณ / สถานะ",
                 ].map((col) => (
                   <span
                     key={col}

@@ -227,6 +227,65 @@ def clean_str(val):
     return val_str if val_str and val_str.lower() != "nan" else None
 
 
+def normalize_publication_type(value):
+    """Keep journal and conference publication types consistent across imports and CRUD."""
+    value = clean_str(value)
+    if not value:
+        return "Journal Article"
+    normalized = value.strip().lower().replace("_", " ").replace("-", " ")
+    if "conference" in normalized or "proceeding" in normalized or "ประชุม" in normalized:
+        return "Conference Proceeding"
+    if normalized in {"article", "journal article", "บทความวารสาร", "บทความวิชาการ"}:
+        return "Journal Article"
+    return value
+
+
+def normalize_department(value):
+    value = clean_str(value)
+    if not value or value == "-":
+        return None
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def upsert_department(cur, value):
+    name = normalize_department(value)
+    if not name:
+        return None
+    cur.execute(
+        "INSERT INTO departments (name) VALUES (%s) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id",
+        (name,),
+    )
+    return cur.fetchone()["id"]
+
+
+def sync_publication_departments(cur, publication_id):
+    cur.execute(
+        """
+        SELECT r.department_id, COUNT(*) AS author_count
+        FROM publication_authors pa
+        JOIN researchers r ON r.id = pa.researcher_id
+        WHERE pa.publication_id = %s AND r.department_id IS NOT NULL
+        GROUP BY r.department_id
+        """,
+        (publication_id,),
+    )
+    counts = cur.fetchall()
+    if not counts:
+        return
+    highest = max(row["author_count"] for row in counts)
+    tied = sum(row["author_count"] == highest for row in counts) > 1
+    for row in counts:
+        cur.execute(
+            """
+            INSERT INTO publication_departments (publication_id, department_id, author_count, is_primary)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (publication_id, department_id) DO UPDATE
+            SET author_count = EXCLUDED.author_count, is_primary = EXCLUDED.is_primary
+            """,
+            (publication_id, row["department_id"], row["author_count"], not tied and row["author_count"] == highest),
+        )
+
+
 def normalize_quartile(q_val):
     """Normalize quartile to 'Q1', 'Q2', 'Q3', 'Q4' or None"""
     if not q_val:
@@ -335,6 +394,7 @@ def ingest_dataframe_to_db(df):
     """Ingest parsed DataFrame into relational tables and legacy table"""
     stats = {
         "inserted_publications": 0,
+        "skipped_publications": 0,
         "inserted_researchers": 0,
         "inserted_journals": 0,
         "inserted_authors_links": 0,
@@ -396,7 +456,7 @@ def ingest_dataframe_to_db(df):
                 doi = clean_str(row.get("doi"))
                 url = clean_str(row.get("url"))
                 scopus_id = clean_str(row.get("scopus_id"))
-                pub_type = clean_str(row.get("publication_type")) or "Article"
+                pub_type = normalize_publication_type(row.get("publication_type"))
                 
                 # Determine published_date or year
                 published_date = None
@@ -415,6 +475,33 @@ def ingest_dataframe_to_db(df):
                 has_thai_title = bool(re.search(r"[\u0E00-\u0E7F]", title))
                 title_th = title if has_thai_title else None
                 title_en = title if not has_thai_title else clean_str(row.get("title_en")) or title
+
+                # Uploads are idempotent: DOI is the strongest identity, with
+                # normalized title and publication year as the fallback.
+                title_key = re.sub(r"\s+", " ", (title_en or title_th or "").strip()).lower()
+                duplicate_query = """
+                    SELECT id FROM publications
+                    WHERE (%s IS NOT NULL AND NULLIF(TRIM(doi), '') IS NOT NULL
+                           AND LOWER(TRIM(doi)) = LOWER(TRIM(%s)))
+                """
+                duplicate_params = [doi, doi]
+                if published_date:
+                    duplicate_query += """
+                        OR (LOWER(REGEXP_REPLACE(TRIM(COALESCE(title_en, title_th)), '\\s+', ' ', 'g')) = %s
+                            AND EXTRACT(YEAR FROM published_date) = %s)
+                    """
+                    duplicate_params.extend([title_key, published_date.year])
+                else:
+                    duplicate_query += """
+                        OR (LOWER(REGEXP_REPLACE(TRIM(COALESCE(title_en, title_th)), '\\s+', ' ', 'g')) = %s
+                            AND published_date IS NULL)
+                    """
+                    duplicate_params.append(title_key)
+                duplicate_query += " LIMIT 1;"
+                cur.execute(duplicate_query, tuple(duplicate_params))
+                if cur.fetchone():
+                    stats["skipped_publications"] += 1
+                    continue
 
                 # Insert Publication
                 cur.execute("""
@@ -475,6 +562,13 @@ def ingest_dataframe_to_db(df):
                         "UPDATE publications SET lead_researcher_id = %s WHERE id = %s;",
                         (lead_researcher_id, pub_id)
                     )
+                department_id = upsert_department(cur, row.get("faculty"))
+                if department_id:
+                    cur.execute(
+                        "UPDATE researchers SET department_id = COALESCE(department_id, %s) WHERE id IN (SELECT researcher_id FROM publication_authors WHERE publication_id = %s)",
+                        (department_id, pub_id),
+                    )
+                sync_publication_departments(cur, pub_id)
 
                 # 4. Handle SDG Goals
                 sdg_raw = row.get("sdg")
@@ -692,6 +786,8 @@ def get_publications():
     try:
         q = request.args.get("q", "").strip()
         quartile = request.args.get("quartile", "").strip().upper()
+        publication_type = normalize_publication_type(request.args.get("publication_type")) if request.args.get("publication_type") else ""
+        department = request.args.get("department", "").strip()
         year = request.args.get("year", "").strip()
         sdg = request.args.get("sdg", "").strip().upper()
         limit_param = request.args.get("limit")
@@ -729,15 +825,31 @@ def get_publications():
                                 'prefix_title', r.prefix_title,
                                 'author_role', pa.author_role,
                                 'author_order', pa.author_order,
-                                'faculty_name', f.name_th
+                                'faculty_name', f.name_th,
+                                'department_name', d.name
                             ) ORDER BY pa.author_order ASC
                         )
                         FROM publication_authors pa
                         JOIN researchers r ON pa.researcher_id = r.id
                         LEFT JOIN faculties f ON r.faculty_id = f.id
+                        LEFT JOIN departments d ON r.department_id = d.id
                         WHERE pa.publication_id = p.id
                     ), '[]'::json
                 ) as authors,
+                COALESCE(
+                    (
+                        SELECT json_agg(
+                            json_build_object(
+                                'name', d.name,
+                                'author_count', pd.author_count,
+                                'is_primary', pd.is_primary
+                            ) ORDER BY d.name
+                        )
+                        FROM publication_departments pd
+                        JOIN departments d ON pd.department_id = d.id
+                        WHERE pd.publication_id = p.id
+                    ), '[]'::json
+                ) as departments,
                 COALESCE(
                     (
                         SELECT json_agg(
@@ -780,6 +892,22 @@ def get_publications():
         if quartile and quartile != "ALL":
             query += " AND p.quartile = %s"
             params.append(quartile)
+
+        if publication_type and publication_type != "ALL":
+            query += " AND p.publication_type = %s"
+            params.append(publication_type)
+
+        if department and department != "ALL":
+            query += """
+                AND EXISTS (
+                    SELECT 1
+                    FROM publication_departments pd_filter
+                    JOIN departments d_filter ON pd_filter.department_id = d_filter.id
+                    WHERE pd_filter.publication_id = p.id
+                    AND d_filter.name = %s
+                )
+            """
+            params.append(department)
 
         if year and year != "ALL":
             try:
@@ -840,15 +968,31 @@ def get_publication_by_id(pub_id):
                                 'prefix_title', r.prefix_title,
                                 'author_role', pa.author_role,
                                 'author_order', pa.author_order,
-                                'faculty_name', f.name_th
+                                'faculty_name', f.name_th,
+                                'department_name', d.name
                             ) ORDER BY pa.author_order ASC
                         )
                         FROM publication_authors pa
                         JOIN researchers r ON pa.researcher_id = r.id
                         LEFT JOIN faculties f ON r.faculty_id = f.id
+                        LEFT JOIN departments d ON r.department_id = d.id
                         WHERE pa.publication_id = p.id
                     ), '[]'::json
                 ) as authors,
+                COALESCE(
+                    (
+                        SELECT json_agg(
+                            json_build_object(
+                                'name', d.name,
+                                'author_count', pd.author_count,
+                                'is_primary', pd.is_primary
+                            ) ORDER BY d.name
+                        )
+                        FROM publication_departments pd
+                        JOIN departments d ON pd.department_id = d.id
+                        WHERE pd.publication_id = p.id
+                    ), '[]'::json
+                ) as departments,
                 COALESCE(
                     (
                         SELECT json_agg(
@@ -906,7 +1050,7 @@ def create_publication():
         if not title_en:
             title_en = title_th
 
-        pub_type = clean_str(data.get("publication_type")) or "Article"
+        pub_type = normalize_publication_type(data.get("publication_type"))
         volume = clean_str(data.get("volume"))
         issue = clean_str(data.get("issue_number") or data.get("issue"))
         pages = clean_str(data.get("page_range") or data.get("pages"))
@@ -1005,7 +1149,7 @@ def update_publication(pub_id):
                     params.append(clean_str(data["title_th"]))
                 if "publication_type" in data:
                     fields.append("publication_type = %s")
-                    params.append(clean_str(data["publication_type"]) or "Article")
+                    params.append(normalize_publication_type(data["publication_type"]))
                 if "volume" in data:
                     fields.append("volume = %s")
                     params.append(clean_str(data["volume"]))
@@ -1147,6 +1291,8 @@ def export_publications():
     try:
         q = request.args.get("q", "").strip()
         quartile = request.args.get("quartile", "").strip().upper()
+        publication_type = normalize_publication_type(request.args.get("publication_type")) if request.args.get("publication_type") else ""
+        department = request.args.get("department", "").strip()
         year = request.args.get("year", "").strip()
         sdg = request.args.get("sdg", "").strip().upper()
         export_format = request.args.get("format", "xlsx").strip().lower()
@@ -1218,6 +1364,22 @@ def export_publications():
         if quartile and quartile != "ALL":
             query += " AND p.quartile = %s"
             params.append(quartile)
+
+        if publication_type and publication_type != "ALL":
+            query += " AND p.publication_type = %s"
+            params.append(publication_type)
+
+        if department and department != "ALL":
+            query += """
+                AND EXISTS (
+                    SELECT 1
+                    FROM publication_departments pd_filter
+                    JOIN departments d_filter ON pd_filter.department_id = d_filter.id
+                    WHERE pd_filter.publication_id = p.id
+                    AND d_filter.name = %s
+                )
+            """
+            params.append(department)
 
         if year and year != "ALL":
             try:
@@ -1415,6 +1577,30 @@ def upload_file():
         file.save(file_path)
         logger.info(f"File saved to: {file_path}")
 
+        # Grant workbooks have multi-row headers and multiple year sheets.
+        # Route them through the domain importer; publication uploads retain
+        # the existing CRUD-compatible ingestion path below.
+        from research_importer import classify_workbook, import_workbooks
+        dataset_type, source_rows = classify_workbook(file_path)
+        if dataset_type in {"internal_grant", "external_grant", "researcher", "research_unit", "publisher"}:
+            if not source_rows:
+                return jsonify({"error": "ไม่พบแถวข้อมูลที่รองรับในไฟล์"}), 400
+            grant_stats = import_workbooks(
+                app.config["UPLOAD_FOLDER"],
+                paths=[file_path],
+            )
+            return jsonify({
+                "success": True,
+                "message": (
+                    f"นำเข้าข้อมูลสำเร็จ: เพิ่มโครงการ {grant_stats['projects']} รายการ, "
+                    f"ประมวลผลแถว {grant_stats['rows']} รายการ, "
+                    f"ข้ามแถวซ้ำ {grant_stats['rows'] - grant_stats['accepted']} รายการ"
+                ),
+                "dataset_type": dataset_type,
+                "stats": grant_stats,
+                "count": grant_stats["projects"],
+            })
+
         # Parse Excel
         df = parse_uploaded_file(file_path, filename)
         logger.info(f"Parsed {len(df)} rows from Excel")
@@ -1427,7 +1613,7 @@ def upload_file():
 
         return jsonify({
             "success": True,
-            "message": f"นำเข้าข้อมูลสำเร็จ: เพิ่มบทความ {stats['inserted_publications']} รายการ, วารสารใหม่ {stats['inserted_journals']} รายการ, นักวิจัยใหม่ {stats['inserted_researchers']} รายการ",
+            "message": f"นำเข้าข้อมูลสำเร็จ: เพิ่มบทความ {stats['inserted_publications']} รายการ, ข้ามรายการซ้ำ {stats['skipped_publications']} รายการ, วารสารใหม่ {stats['inserted_journals']} รายการ, นักวิจัยใหม่ {stats['inserted_researchers']} รายการ",
             "stats": stats,
             "count": stats["inserted_publications"],
         })
@@ -1645,6 +1831,30 @@ def get_faculties():
                 return jsonify([dict(row) for row in records])
     except Exception as e:
         logger.error(f"Error fetching faculties: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/departments", methods=["GET"])
+def get_departments():
+    """Get departments with researcher and publication counts."""
+    try:
+        with get_db_connection(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        d.id,
+                        d.name,
+                        COUNT(DISTINCT r.id) AS researcher_count,
+                        COUNT(DISTINCT pd.publication_id) AS publication_count
+                    FROM departments d
+                    LEFT JOIN researchers r ON r.department_id = d.id
+                    LEFT JOIN publication_departments pd ON pd.department_id = d.id
+                    GROUP BY d.id, d.name
+                    ORDER BY d.name;
+                """)
+                return jsonify([dict(row) for row in cur.fetchall()])
+    except Exception as e:
+        logger.error(f"Error fetching departments: {e}")
         return jsonify({"error": str(e)}), 500
 
 
