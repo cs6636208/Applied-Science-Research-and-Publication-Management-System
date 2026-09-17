@@ -1,21 +1,24 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Prompt, Inter } from "next/font/google";
 import Navbar from "./components/Navbar";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
+const prompt = Prompt({
+  weight: ["300", "400", "500", "600", "700"],
+  subsets: ["thai", "latin"],
+  variable: "--font-prompt",
+  display: "swap",
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const inter = Inter({
   subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
 });
 
 export const metadata: Metadata = {
-  title: "KMUTNB Research Hub | Applied Science Publication Management",
-  description: "Advanced Academic Research and Publication Management System, Faculty of Applied Science, KMUTNB",
+  title: "ระบบบริหารจัดการงานวิจัยและผลงานตีพิมพ์ คณะวิทยาศาสตร์ประยุกต์ | Applied Science Research and Publication Management System",
+  description: "ระบบบริหารจัดการงานวิจัยและผลงานตีพิมพ์ คณะวิทยาศาสตร์ประยุกต์ มหาวิทยาลัยเทคโนโลยีพระจอมเกล้าพระนครเหนือ",
 };
 
 export default function RootLayout({
@@ -26,12 +29,14 @@ export default function RootLayout({
   return (
     <html
       lang="th"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased dark`}
+      data-scroll-behavior="smooth"
+      className={`${prompt.variable} ${inter.variable} h-full antialiased`}
     >
-      <body className="min-h-screen flex flex-col bg-slate-950 text-slate-100 selection:bg-cyan-500/30 selection:text-cyan-200">
+      <body className="min-h-screen flex flex-col bg-[#f6f8fa] text-slate-700 font-sans selection:bg-orange-200 selection:text-orange-900">
         <Navbar />
         <div className="flex-1">{children}</div>
       </body>
     </html>
   );
 }
+

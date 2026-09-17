@@ -1,60 +1,90 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BookOpen, UploadCloud, LayoutDashboard, Database, Users } from "lucide-react";
+import {
+  BookOpen,
+  ChevronRight,
+  FolderKanban,
+  LayoutDashboard,
+  Menu,
+  Target,
+  UploadCloud,
+  Users,
+  X,
+} from "lucide-react";
+
+const navItems = [
+  { name: "ภาพรวมระบบ", href: "/", icon: LayoutDashboard, hint: "Dashboard" },
+  { name: "ผลงานตีพิมพ์", href: "/records", icon: BookOpen, hint: "Publications" },
+  { name: "ทุนและโครงการวิจัย", href: "/projects", icon: FolderKanban, hint: "Projects & Grants" },
+  { name: "คณาจารย์และนักวิจัย", href: "/researchers", icon: Users, hint: "Researchers" },
+  { name: "นำเข้าข้อมูล Excel", href: "/upload", icon: UploadCloud, hint: "Import Data" },
+  { name: "ตัวชี้วัดและเป้าหมาย", href: "/#kpi-section", icon: Target, hint: "Plan KPI" },
+];
+
+function Brand() {
+  return (
+    <Link href="/" className="sidebar-brand" aria-label="หน้าหลักระบบบริหารจัดการงานวิจัย">
+      <span className="sidebar-brand-mark">AS</span>
+      <span className="sidebar-brand-copy">
+        <strong>Research System</strong>
+        <small>Applied Science</small>
+      </span>
+    </Link>
+  );
+}
+
+function NavLinks({ closeMenu }: { closeMenu?: () => void }) {
+  const pathname = usePathname();
+  return (
+    <nav className="app-nav" aria-label="เมนูหลัก">
+      <p className="app-nav-label">เมนูหลัก</p>
+      {navItems.map((item) => {
+        const Icon = item.icon;
+        const isActive = item.href.includes("#") ? false : pathname === item.href;
+        return (
+          <Link key={item.href} href={item.href} onClick={closeMenu} className={`app-nav-link ${isActive ? "is-active" : ""}`}>
+            <Icon className="app-nav-icon" />
+            <span className="app-nav-text"><strong>{item.name}</strong><small>{item.hint}</small></span>
+            {isActive && <ChevronRight className="app-nav-arrow" />}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
 
 export default function Navbar() {
-  const pathname = usePathname();
-
-  const navItems = [
-    { name: "Dashboard", href: "/", icon: LayoutDashboard },
-    { name: "Publications", href: "/records", icon: BookOpen },
-    { name: "Researchers", href: "/researchers", icon: Users },
-    { name: "Import Dataset", href: "/upload", icon: UploadCloud },
-  ];
-
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   return (
-    <header className="sticky top-0 z-40 border-b border-slate-800/80 bg-slate-950/75 backdrop-blur-xl">
-      <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-        {/* Brand */}
-        <Link href="/" className="flex items-center gap-3 group">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 shadow-lg shadow-cyan-500/20 group-hover:scale-105 transition">
-            <Database className="h-5 w-5 text-white" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-bold tracking-tight text-white text-base md:text-lg">KMUTNB Data Hub</span>
-              <span className="rounded-md bg-cyan-500/10 px-2 py-0.5 text-[11px] font-semibold text-cyan-400 border border-cyan-500/20">
-                Applied Science
-              </span>
-            </div>
-            <p className="text-xs text-slate-400 hidden sm:block">Research & Publication Management System</p>
-          </div>
-        </Link>
+    <>
+      <aside className="app-sidebar">
+        <Brand />
+        <div className="sidebar-system-name">
+          <span>ระบบบริหารจัดการงานวิจัยและผลงานตีพิมพ์คณะวิทยาศาสตร์ประยุกต์</span>
+        </div>
+        <NavLinks />
+        <div className="sidebar-bottom">
+          <div className="sidebar-status"><span /> ระบบพร้อมใช้งาน</div>
+          <p>Applied Science Research and<br />Publication Management System</p>
+        </div>
+      </aside>
 
-        {/* Navigation Links */}
-        <nav className="flex items-center gap-1.5 sm:gap-2">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = pathname === item.href;
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`flex items-center gap-2 rounded-xl px-3.5 py-2 text-sm font-medium transition-all ${
-                  isActive
-                    ? "bg-slate-800/90 text-cyan-400 border border-cyan-500/30 shadow-inner"
-                    : "text-slate-300 hover:bg-slate-800/50 hover:text-white border border-transparent"
-                }`}
-              >
-                <Icon className={`h-4 w-4 ${isActive ? "text-cyan-400" : "text-slate-400"}`} />
-                <span>{item.name}</span>
-              </Link>
-            );
-          })}
-        </nav>
-      </div>
-    </header>
+      <header className="mobile-topbar">
+        <Brand />
+        <button className="mobile-nav-toggle" onClick={() => setMobileMenuOpen((open) => !open)} aria-label="เปิดเมนู">
+          {mobileMenuOpen ? <X /> : <Menu />}
+        </button>
+      </header>
+
+      {mobileMenuOpen && (
+        <div className="mobile-nav-drawer">
+          <NavLinks closeMenu={() => setMobileMenuOpen(false)} />
+          <div className="sidebar-bottom"><div className="sidebar-status"><span /> ระบบพร้อมใช้งาน</div></div>
+        </div>
+      )}
+    </>
   );
 }

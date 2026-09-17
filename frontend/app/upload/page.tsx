@@ -91,7 +91,7 @@ export default function UploadPage() {
   };
 
   return (
-    <main className="min-h-screen pb-16 pt-8 px-4 sm:px-6 lg:px-8">
+    <main className="upload-page page-shell min-h-screen pb-16 pt-8 px-4 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-4xl space-y-8">
         {/* HEADER */}
         <div className="text-center space-y-2">

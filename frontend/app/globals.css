@@ -8,8 +8,7 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-prompt), var(--font-inter), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 * {
@@ -18,15 +17,567 @@
 
 html {
   scroll-behavior: smooth;
+  overflow-x: hidden;
 }
 
 body {
   margin: 0;
+  overflow-x: hidden;
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-prompt), var(--font-inter), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 a {
   text-decoration: none;
+}
+
+/* Visual polish for the original research dashboard: keep the structure and
+   dark identity, but give repeated panels a calmer and more consistent rhythm. */
+.research-home {
+  background: #0b1220 !important;
+}
+.research-home section {
+  border-color: #26344d !important;
+  box-shadow: 0 14px 35px rgba(0, 0, 0, .16) !important;
+}
+.research-home .bg-gradient-to-br {
+  background-image: none !important;
+  background-color: #111b2e !important;
+}
+.research-home .bg-slate-950\/70 {
+  background-color: rgba(11, 18, 32, .72) !important;
+}
+.research-home .border-slate-800,
+.research-home .border-slate-800\/80,
+.research-home .border-slate-800\/90 {
+  border-color: #26344d !important;
+}
+.research-home input,
+.research-home select {
+  color-scheme: light;
+}
+
+/* Shared light theme across every existing screen. The page structures stay
+   intact; these tokens make the information hierarchy readable as one system. */
+:root {
+  --background: #f6f8fa;
+  --foreground: #4f5663;
+  --light-green: #b9ead8;
+  --light-green-strong: #77cfb0;
+  --orange-nav: #ef6b2d;
+}
+body,
+body.bg-slate-950 {
+  background: var(--background) !important;
+  color: var(--foreground) !important;
+}
+body [class*="bg-slate-950"] { background-color: #ffffff !important; }
+body [class*="bg-slate-900"] { background-color: #f9fbfc !important; }
+body [class*="bg-slate-800"] { background-color: #eef3f4 !important; }
+body [class*="bg-slate-700"] { background-color: #e4eaec !important; }
+body [class*="bg-gradient-to-br"] { background-image: linear-gradient(135deg, #ffffff 0%, #fffaf6 58%, #effbf8 100%) !important; }
+body [class*="text-white"] { color: #3f4653 !important; }
+body [class*="text-slate-100"], body [class*="text-slate-200"], body [class*="text-slate-300"] { color: #596171 !important; }
+body [class*="text-slate-400"], body [class*="text-slate-500"] { color: #7d8490 !important; }
+body [class*="border-slate-"] { border-color: #e2e8ea !important; }
+body [class*="shadow-2xl"], body [class*="shadow-xl"] { box-shadow: 0 10px 28px rgba(60, 75, 85, .10) !important; }
+
+/* Orange institutional navigation, green action buttons. */
+body > header,
+body > header > div,
+body > header > div > div,
+body > header nav + div,
+body > header nav + div > div {
+  background-image: none !important;
+  background-color: var(--orange-nav) !important;
+  border-color: rgba(255, 255, 255, .22) !important;
+}
+body > header a,
+body > header span,
+body > header p { color: #ffffff !important; }
+body > header .text-orange-400,
+body > header .text-orange-300 { color: #fff3dc !important; }
+body > header .bg-slate-900,
+body > header .bg-slate-800,
+body > header .bg-slate-950 { background-color: rgba(255, 255, 255, .14) !important; }
+body > header nav a:hover,
+body > header nav a[class*="bg-gradient"] { background: rgba(255, 255, 255, .20) !important; }
+
+body main button[class*="bg-orange-"],
+body main a[class*="bg-orange-"],
+body main button[class*="from-orange-"],
+body main button[class*="from-cyan-"],
+body main button[class*="from-blue-"],
+body main button[class*="from-emerald-"],
+body main button[class*="bg-cyan-"],
+body main button[class*="bg-blue-"],
+body main button[class*="bg-emerald-"] {
+  background-image: none !important;
+  background-color: var(--light-green) !important;
+  border-color: #98dcc2 !important;
+  color: #166b55 !important;
+  box-shadow: 0 5px 12px rgba(61, 170, 132, .16) !important;
+}
+body main button[class*="bg-orange-"]:hover,
+body main a[class*="bg-orange-"]:hover,
+body main button[class*="from-"]:hover,
+body main button[class*="bg-cyan-"]:hover,
+body main button[class*="bg-blue-"]:hover,
+body main button[class*="bg-emerald-"]:hover { background-color: var(--light-green-strong) !important; }
+body main [class*="text-orange-"] { color: #c85a26 !important; }
+body main [class*="text-cyan-"] { color: #138e96 !important; }
+body main [class*="text-emerald-"] { color: #21845d !important; }
+
+@media (max-width: 767px) {
+  body > header { position: sticky; top: 0; }
+  body > header .bg-gradient-to-r { background-image: none !important; }
+}
+
+/* The original home screen had an explicit dark gradient override above; the
+   shared light theme intentionally wins here so its content remains legible. */
+.research-home .bg-gradient-to-br {
+  background-image: linear-gradient(135deg, #ffffff 0%, #fffaf6 58%, #effbf8 100%) !important;
+  background-color: #ffffff !important;
+}
+
+/* Final enterprise layout pass: navy navigation, restrained orange identity,
+   and repeatable white content surfaces on every route. */
+:root { --navy: #16324f; --navy-strong: #102942; --brand-orange: #ef6b2d; }
+body > header,
+body > header > div,
+body > header > div > div,
+body > header nav + div,
+body > header nav + div > div {
+  background-color: var(--navy) !important;
+  background-image: none !important;
+}
+body > header > div:first-child { background-color: var(--brand-orange) !important; }
+body > header nav a[class*="bg-gradient"],
+body > header nav a:hover { background: rgba(239, 107, 45, .18) !important; }
+body > header .text-orange-400,
+body > header .text-orange-300 { color: #ffb27c !important; }
+body > header .bg-orange-500\/10,
+body > header .bg-orange-600\/20 { background-color: rgba(239, 107, 45, .20) !important; }
+body > header .border-orange-500\/30,
+body > header .border-orange-500\/20 { border-color: rgba(255, 178, 124, .45) !important; }
+body > header [class*="text-white"],
+body > header [class*="text-slate-"],
+body > header .font-semibold { color: #f8fafc !important; }
+body > header [class*="text-orange-"] { color: #ffb27c !important; }
+
+.page-shell { background: var(--background) !important; }
+.page-shell > .mx-auto { width: 100%; max-width: 1180px; }
+.page-shell h1 { color: #25364a !important; letter-spacing: -.015em; line-height: 1.2; }
+.page-shell h2, .page-shell h3, .page-shell h4 { color: #34495e !important; }
+.page-shell input,
+.page-shell select,
+.page-shell textarea { border-color: #dfe7ea !important; background-color: #ffffff !important; color: #34495e !important; }
+.page-shell input::placeholder,
+.page-shell textarea::placeholder { color: #9aa6b2 !important; }
+.page-shell section,
+.page-shell .rounded-3xl,
+.page-shell .rounded-2xl { border-color: #e1e8eb !important; box-shadow: 0 8px 24px rgba(38, 64, 82, .07) !important; }
+.page-shell .rounded-3xl:hover,
+.page-shell .rounded-2xl:hover { box-shadow: 0 10px 28px rgba(38, 64, 82, .10) !important; }
+.page-shell [class*="divide-slate-"] > :not([hidden]) ~ :not([hidden]) { border-color: #e7edef !important; }
+.page-shell [class*="bg-gradient-to-b"],
+.page-shell [class*="from-slate-900"],
+.page-shell [class*="via-slate-900"],
+.page-shell [class*="to-slate-950"] {
+  background-image: none !important;
+  background-color: #ffffff !important;
+}
+.page-shell [class*="from-[#"],
+.page-shell [class*="to-[#"] {
+  background-image: none !important;
+  background-color: #ffffff !important;
+}
+.page-shell button,
+.page-shell a { transition: background-color .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+
+@media (min-width: 768px) {
+  .page-shell { padding-top: 36px !important; }
+}
+
+/* Organizational shell: persistent navigation, clear working area, and a
+   compact mobile menu. */
+body > div.flex-1 { margin-left: 276px; min-width: 0; }
+.app-sidebar {
+  position: fixed; z-index: 40; inset: 0 auto 0 0; width: 276px; display: flex; flex-direction: column;
+  padding: 28px 18px 20px; color: #e7eef6; background: var(--navy); border-right: 1px solid #24435e;
+  box-shadow: 8px 0 28px rgba(19, 48, 73, .12);
+}
+.sidebar-brand { display: flex; align-items: center; gap: 12px; padding: 0 8px 25px; border-bottom: 1px solid rgba(255,255,255,.12); color: #fff; }
+.sidebar-brand-mark { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; color: #fff; background: var(--brand-orange); font-size: 14px; font-weight: 800; letter-spacing: .04em; box-shadow: 0 6px 16px rgba(239,107,45,.25); }
+.sidebar-brand-copy { display: grid; line-height: 1.15; }.sidebar-brand-copy strong { font-size: 16px; }.sidebar-brand-copy small { margin-top: 4px; color: #a9bdd0; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+.sidebar-system-name { display: grid; gap: 3px; padding: 20px 8px 15px; color: #b8c8d7; font-size: 12px; line-height: 1.45; }.sidebar-system-name small { color: #8099af; font-size: 11px; }
+.app-nav { display: grid; gap: 5px; }.app-nav-label { margin: 0 8px 5px; color: #6e8aa2; font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.app-nav-link { display: flex; align-items: center; gap: 11px; min-height: 50px; padding: 8px 10px; border: 1px solid transparent; border-radius: 10px; color: #b6c8d8; transition: .18s ease; }
+.app-nav-link:hover { color: #fff; background: rgba(255,255,255,.08); }.app-nav-link.is-active { color: #fff; background: rgba(239,107,45,.17); border-color: rgba(239,107,45,.42); box-shadow: inset 3px 0 0 var(--brand-orange); }
+.app-nav-icon { width: 19px; height: 19px; flex: 0 0 auto; color: #89a7bf; }.app-nav-link:hover .app-nav-icon, .app-nav-link.is-active .app-nav-icon { color: #ff9a64; }
+.app-nav-text { display: grid; gap: 2px; min-width: 0; flex: 1; line-height: 1.1; }.app-nav-text strong { font-size: 13px; font-weight: 600; }.app-nav-text small { color: #6f899f; font-size: 10px; }.app-nav-link.is-active .app-nav-text small { color: #efb99d; }.app-nav-arrow { width: 14px; height: 14px; color: #ff9a64; }
+.sidebar-bottom { margin-top: auto; padding: 16px 8px 0; border-top: 1px solid rgba(255,255,255,.10); }.sidebar-status { display: flex; align-items: center; gap: 7px; color: #b9e9d8; font-size: 11px; font-weight: 600; }.sidebar-status span { width: 7px; height: 7px; border-radius: 50%; background: #72d2ad; box-shadow: 0 0 0 4px rgba(114,210,173,.12); }.sidebar-bottom p { margin: 12px 0 0; color: #6f899f; font-size: 10px; line-height: 1.5; }
+.mobile-topbar, .mobile-nav-drawer { display: none; }
+
+@media (max-width: 1023px) {
+  .app-sidebar { width: 238px; padding-left: 13px; padding-right: 13px; }
+  body > div.flex-1 { margin-left: 238px; }
+  .app-nav-text small, .sidebar-system-name { display: none; }
+  .sidebar-brand { padding-left: 5px; }.app-nav-link { padding-left: 8px; padding-right: 8px; }
+}
+@media (max-width: 767px) {
+  .app-sidebar { display: none; }
+  body > div.flex-1 { margin-left: 0; }
+  body > header.mobile-topbar { position: sticky; z-index: 50; top: 0; inset: auto; width: 100%; height: 68px; display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border: 0; background: var(--navy) !important; box-shadow: 0 5px 18px rgba(19,48,73,.18); }
+  .mobile-topbar .sidebar-brand { padding: 0; border: 0; }.mobile-topbar .sidebar-brand-mark { width: 36px; height: 36px; border-radius: 10px; font-size: 12px; }.mobile-topbar .sidebar-brand-copy strong { font-size: 14px; }.mobile-topbar .sidebar-brand-copy small { font-size: 9px; }
+  .mobile-nav-toggle { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid rgba(255,255,255,.26); border-radius: 10px; color: #fff; background: rgba(255,255,255,.08); }.mobile-nav-toggle svg { width: 21px; }
+  .mobile-nav-drawer { position: fixed; z-index: 45; inset: 68px 0 auto; display: block; max-height: calc(100vh - 68px); overflow-y: auto; padding: 18px 16px; color: #e7eef6; background: var(--navy); box-shadow: 0 16px 25px rgba(19,48,73,.22); }.mobile-nav-drawer .app-nav { display: grid; }.mobile-nav-drawer .app-nav-label { display: block; }.mobile-nav-drawer .app-nav-text small { display: block; }.mobile-nav-drawer .sidebar-bottom { display: block; margin-top: 18px; }.mobile-nav-drawer .app-nav-link { min-height: 48px; }
+  .page-shell { padding-top: 22px !important; }
+}
+
+/* Keep dashboard content surfaces light and easy to scan. The navy palette is
+   reserved for navigation; regular homepage cards should not fall back to a
+   dark-mode surface. */
+.research-home .bg-slate-950\/70,
+.research-home .bg-slate-900\/60,
+.research-home .bg-slate-900\/70,
+.research-home .bg-slate-900\/80,
+.research-home .bg-slate-950\/60,
+.research-home .bg-slate-950\/80,
+.research-home .bg-slate-950\/98 {
+  background-color: #ffffff !important;
+  background-image: none !important;
+}
+
+.research-home .bg-slate-800,
+.research-home .bg-slate-800\/80,
+.research-home .bg-slate-700\/60 {
+  background-color: #f1f5f6 !important;
+  background-image: none !important;
+}
+
+/* Figma-inspired light SaaS surface system. Keep the existing information
+   architecture, but give every route the same calm workspace, panel rhythm,
+   and restrained component language. */
+:root {
+  --workspace: #f5f7fb;
+  --surface: #ffffff;
+  --surface-muted: #f8fafc;
+  --line: #e7ebf1;
+  --ink: #1f2a3a;
+  --ink-soft: #667085;
+  --accent-orange: #ef6b2d;
+  --accent-green: #bcebd9;
+  --accent-green-ink: #16745b;
+}
+
+body,
+body.bg-slate-950 {
+  background: var(--workspace) !important;
+  color: var(--ink-soft) !important;
+}
+
+.page-shell {
+  background: var(--workspace) !important;
+}
+
+.page-shell [class*="bg-gradient-"] {
+  background-image: none !important;
+  background-color: var(--surface) !important;
+}
+
+.page-shell .bg-clip-text,
+.page-shell .text-transparent {
+  background-image: none !important;
+  color: var(--accent-orange) !important;
+  -webkit-text-fill-color: var(--accent-orange) !important;
+}
+
+.page-shell .backdrop-blur-sm,
+.page-shell .backdrop-blur-md,
+.page-shell .backdrop-blur-xl,
+.page-shell .backdrop-blur-2xl {
+  backdrop-filter: none !important;
+}
+
+.page-shell section,
+.page-shell .rounded-3xl,
+.page-shell .rounded-2xl {
+  background-color: var(--surface) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: 18px !important;
+  box-shadow: 0 8px 24px rgba(31, 42, 58, .055) !important;
+}
+
+.page-shell .rounded-xl {
+  border-radius: 12px !important;
+}
+
+.page-shell section:hover,
+.page-shell .rounded-3xl:hover,
+.page-shell .rounded-2xl:hover {
+  box-shadow: 0 12px 30px rgba(31, 42, 58, .08) !important;
+}
+
+.page-shell h1,
+.page-shell h2,
+.page-shell h3,
+.page-shell h4 {
+  color: var(--ink) !important;
+}
+
+.page-shell p,
+.page-shell label,
+.page-shell [class*="text-slate-400"],
+.page-shell [class*="text-slate-500"] {
+  color: var(--ink-soft) !important;
+}
+
+.page-shell [class*="border-slate-"] {
+  border-color: var(--line) !important;
+}
+
+.page-shell input,
+.page-shell select,
+.page-shell textarea {
+  min-height: 42px;
+  border-color: #dfe5ed !important;
+  border-radius: 10px !important;
+  background: var(--surface) !important;
+  color: var(--ink) !important;
+  box-shadow: inset 0 1px 2px rgba(31, 42, 58, .025) !important;
+}
+
+.page-shell input:focus,
+.page-shell select:focus,
+.page-shell textarea:focus {
+  border-color: #77cfb0 !important;
+  box-shadow: 0 0 0 3px rgba(119, 207, 176, .18) !important;
+}
+
+.page-shell button[class*="bg-orange-"],
+.page-shell a[class*="bg-orange-"],
+.page-shell button[class*="from-orange-"],
+.page-shell button[class*="from-cyan-"],
+.page-shell button[class*="from-blue-"],
+.page-shell button[class*="from-emerald-"],
+.page-shell button[class*="bg-cyan-"],
+.page-shell button[class*="bg-blue-"],
+.page-shell button[class*="bg-emerald-"] {
+  border: 1px solid #9cddc5 !important;
+  border-radius: 10px !important;
+  background: var(--accent-green) !important;
+  color: var(--accent-green-ink) !important;
+  box-shadow: 0 4px 10px rgba(48, 160, 119, .13) !important;
+}
+
+.page-shell button[class*="bg-orange-"]:hover,
+.page-shell a[class*="bg-orange-"]:hover,
+.page-shell button[class*="from-"]:hover,
+.page-shell button[class*="bg-cyan-"]:hover,
+.page-shell button[class*="bg-blue-"]:hover,
+.page-shell button[class*="bg-emerald-"]:hover {
+  background: #8bd8b8 !important;
+  color: #0f5d49 !important;
+}
+
+/* Light navigation with a clear orange institutional marker. */
+.app-sidebar {
+  padding-top: 28px;
+  color: #5e6878;
+  background: var(--surface) !important;
+  border-right: 1px solid #e7ebf1 !important;
+  box-shadow: 5px 0 24px rgba(31, 42, 58, .055) !important;
+}
+
+.app-sidebar::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 5px;
+  content: "";
+  background: var(--accent-orange);
+}
+
+.sidebar-brand {
+  color: var(--ink) !important;
+  border-bottom-color: #edf0f4 !important;
+}
+
+.sidebar-brand-mark {
+  background: var(--accent-orange) !important;
+  box-shadow: 0 6px 16px rgba(239, 107, 45, .22) !important;
+}
+
+.sidebar-brand-copy small {
+  color: #98a2b3 !important;
+}
+
+.sidebar-system-name {
+  color: #667085 !important;
+}
+
+.sidebar-system-name small {
+  color: #98a2b3 !important;
+}
+
+.app-nav-label {
+  color: #98a2b3 !important;
+}
+
+.app-nav-link {
+  color: #667085 !important;
+  border-color: transparent !important;
+}
+
+.app-nav-link:hover {
+  color: var(--ink) !important;
+  background: #fff8f3 !important;
+}
+
+.app-nav-link.is-active {
+  color: #b95322 !important;
+  background: #fff2e9 !important;
+  border-color: #ffe0ce !important;
+  box-shadow: inset 3px 0 0 var(--accent-orange) !important;
+}
+
+.app-nav-icon {
+  color: #9aa5b5 !important;
+}
+
+.app-nav-link:hover .app-nav-icon,
+.app-nav-link.is-active .app-nav-icon,
+.app-nav-arrow {
+  color: var(--accent-orange) !important;
+}
+
+.app-nav-text small {
+  color: #a1aab8 !important;
+}
+
+.app-nav-link.is-active .app-nav-text small {
+  color: #cf8763 !important;
+}
+
+.sidebar-bottom {
+  border-top-color: #edf0f4 !important;
+}
+
+.sidebar-status {
+  color: var(--accent-green-ink) !important;
+}
+
+.sidebar-bottom p {
+  color: #98a2b3 !important;
+}
+
+.mobile-topbar {
+  background: var(--accent-orange) !important;
+  box-shadow: 0 5px 18px rgba(239, 107, 45, .20) !important;
+}
+
+.mobile-topbar .sidebar-brand {
+  color: #ffffff !important;
+}
+
+.mobile-topbar .sidebar-brand-mark {
+  color: var(--accent-orange) !important;
+  background: #ffffff !important;
+  box-shadow: none !important;
+}
+
+.mobile-topbar .sidebar-brand-copy small {
+  color: rgba(255, 255, 255, .72) !important;
+}
+
+.mobile-nav-toggle {
+  border-color: rgba(255, 255, 255, .42) !important;
+  background: rgba(255, 255, 255, .13) !important;
+}
+
+.mobile-nav-drawer {
+  background: var(--surface) !important;
+  color: #667085 !important;
+  border-bottom: 1px solid var(--line);
+  box-shadow: 0 16px 25px rgba(31, 42, 58, .10) !important;
+}
+
+.mobile-nav-drawer .app-nav-link {
+  color: #667085 !important;
+}
+
+/* KPI target progress uses one consistent orange signal across all three
+   indicators. Status badges remain green when a target has been achieved. */
+.page-shell .kpi-progress-fill {
+  background: #ef6b2d !important;
+  background-image: linear-gradient(90deg, #ef6b2d 0%, #f6a04d 100%) !important;
+}
+
+.page-shell .kpi-progress-value {
+  color: #d85d25 !important;
+}
+
+.page-shell .kpi-achieved-progress {
+  background: #2caf86 !important;
+  background-image: linear-gradient(90deg, #2caf86 0%, #73d5b0 100%) !important;
+}
+
+.page-shell .kpi-achieved-value {
+  color: #21845d !important;
+}
+
+/* The portal hero is intentionally quiet: white canvas, orange outline, and
+   no decorative color wash behind the existing content. */
+.page-shell .hero-portal {
+  background: #ffffff !important;
+  background-image: none !important;
+  border: 1px solid #ef6b2d !important;
+  box-shadow: 0 8px 22px rgba(239, 107, 45, .10), 0 2px 6px rgba(31, 42, 58, .04) !important;
+}
+
+.page-shell .hero-portal > .absolute {
+  display: none !important;
+}
+
+.page-shell .hero-portal [class*="border-"] {
+  border-color: #ef6b2d !important;
+}
+
+.page-shell .hero-portal [class*="bg-orange-"],
+.page-shell .hero-portal [class*="bg-blue-"],
+.page-shell .hero-portal [class*="bg-slate-"] {
+  background: #ffffff !important;
+  background-image: none !important;
+}
+
+.page-shell .hero-portal .hero-search-input {
+  border-color: #ef6b2d !important;
+  box-shadow: none !important;
+}
+
+/* Consistent interaction feedback for every enabled button in the system. */
+body button:not(:disabled) {
+  cursor: pointer;
+  transition: transform .18s ease, box-shadow .18s ease, filter .18s ease, border-color .18s ease;
+}
+
+body button:not(:disabled):hover {
+  transform: translateY(-1px);
+  filter: brightness(.99);
+  box-shadow: 0 7px 16px rgba(239, 107, 45, .16), 0 0 0 2px rgba(239, 107, 45, .07);
+}
+
+body button:not(:disabled):active {
+  transform: translateY(0) scale(.98);
+  box-shadow: 0 3px 8px rgba(31, 42, 58, .10);
+}
+
+body button:disabled {
+  cursor: not-allowed;
+}
+
+body button:not(:disabled):focus-visible {
+  outline: 3px solid rgba(239, 107, 45, .25);
+  outline-offset: 2px;
 }

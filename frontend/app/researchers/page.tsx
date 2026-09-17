@@ -132,14 +132,14 @@ export default function ResearchersPage() {
   };
 
   return (
-    <main className="min-h-screen pb-16 pt-8 px-4 sm:px-6 lg:px-8">
+    <main className="researchers-page page-shell min-h-screen pb-16 pt-8 px-4 sm:px-6 lg:px-8">
       <div className="mx-auto max-w-7xl space-y-8">
         {/* HEADER */}
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3.5 py-1 text-xs font-semibold text-cyan-300 mb-2">
               <Users className="h-3.5 w-3.5" />
-              <span>Researchers Directory</span>
+              <span>ทำเนียบนักวิจัย</span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
               ทำเนียบอาจารย์และนักวิจัย
