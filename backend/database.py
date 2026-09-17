@@ -136,26 +136,7 @@ CREATE_PUBLICATION_SDGS_TABLE = """
     );
 """
 
-# Legacy table (kept for backward compatibility)
-CREATE_ACADEMIC_PAPERS_TABLE = """
-    CREATE TABLE IF NOT EXISTS academic_papers (
-        id SERIAL PRIMARY KEY,
-        paper_id TEXT,
-        title TEXT,
-        authors TEXT,
-        publication_year INTEGER,
-        journal TEXT,
-        volume TEXT,
-        issue TEXT,
-        pages TEXT,
-        keywords TEXT,
-        abstract TEXT,
-        doi TEXT,
-        url TEXT,
-        source_file TEXT,
-        uploaded_at TIMESTAMPTZ DEFAULT NOW()
-    );
-"""
+
 
 # Domain tables for the complete KMUTNB source catalogue. These tables are
 # additive so existing publication APIs and legacy data remain compatible.
@@ -167,15 +148,7 @@ CREATE_RESEARCH_DOMAIN_TABLES = [
         created_at TIMESTAMPTZ DEFAULT NOW()
     );
     """,
-    """
-    CREATE TABLE IF NOT EXISTS organizations (
-        id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL,
-        organization_type VARCHAR(50),
-        country TEXT,
-        UNIQUE (name)
-    );
-    """,
+
     """
     CREATE TABLE IF NOT EXISTS import_batches (
         id BIGSERIAL PRIMARY KEY,
@@ -249,14 +222,7 @@ CREATE_RESEARCH_DOMAIN_TABLES = [
         UNIQUE (name)
     );
     """,
-    """
-    CREATE TABLE IF NOT EXISTS research_unit_members (
-        unit_id BIGINT NOT NULL REFERENCES research_units(id) ON DELETE CASCADE,
-        researcher_id INT NOT NULL REFERENCES researchers(id) ON DELETE CASCADE,
-        role VARCHAR(100),
-        PRIMARY KEY (unit_id, researcher_id)
-    );
-    """,
+
     """
     CREATE TABLE IF NOT EXISTS publishers (
         id BIGSERIAL PRIMARY KEY,
@@ -266,16 +232,7 @@ CREATE_RESEARCH_DOMAIN_TABLES = [
         UNIQUE (name)
     );
     """,
-    """
-    CREATE TABLE IF NOT EXISTS research_external_people (
-        id BIGSERIAL PRIMARY KEY,
-        display_name TEXT NOT NULL,
-        organization TEXT,
-        country TEXT,
-        source_row_id BIGINT REFERENCES import_rows(id) ON DELETE SET NULL,
-        UNIQUE (display_name, organization)
-    );
-    """,
+
     """
     CREATE TABLE IF NOT EXISTS publication_source_rows (
         publication_id INT NOT NULL REFERENCES publications(id) ON DELETE CASCADE,
@@ -397,7 +354,6 @@ def create_tables():
                     ("publication_authors", CREATE_PUBLICATION_AUTHORS_TABLE),
                     ("sdg_goals", CREATE_SDG_GOALS_TABLE),
                     ("publication_sdgs", CREATE_PUBLICATION_SDGS_TABLE),
-                    ("academic_papers", CREATE_ACADEMIC_PAPERS_TABLE),  # Legacy table
                 ]
                 
                 for table_name, create_sql in tables:

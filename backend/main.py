@@ -582,30 +582,7 @@ def ingest_dataframe_to_db(df):
                         """, (pub_id, sdg_id))
                         stats["inserted_sdgs"] += 1
 
-                # 5. Insert into legacy academic_papers table for compatibility
-                try:
-                    cur.execute("""
-                        INSERT INTO academic_papers 
-                        (paper_id, title, authors, publication_year, journal, 
-                         volume, issue, pages, keywords, abstract, doi, url, source_file)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-                    """, (
-                        clean_str(row.get("paper_id")),
-                        title,
-                        authors_raw,
-                        pub_year if pd.notna(pub_year) else None,
-                        journal_name,
-                        volume,
-                        issue,
-                        pages,
-                        clean_str(row.get("keywords")),
-                        clean_str(row.get("abstract")),
-                        doi,
-                        url,
-                        clean_str(row.get("source_file"))
-                    ))
-                except Exception as leg_err:
-                    logger.warning(f"Legacy insert warning: {leg_err}")
+
 
             conn.commit()
             logger.info(f"✓ Ingested successfully: {stats}")
@@ -1257,11 +1234,7 @@ def delete_publication(pub_id):
                 if not pub:
                     return jsonify({"error": "Publication not found"}), 404
 
-                # Delete legacy copy if matching paper_id
-                try:
-                    cur.execute("DELETE FROM academic_papers WHERE paper_id = %s;", (str(pub_id),))
-                except Exception:
-                    pass
+
 
                 # Delete publication (cascades to publication_authors and publication_sdgs)
                 cur.execute("DELETE FROM publications WHERE id = %s;", (pub_id,))
@@ -1486,6 +1459,32 @@ def get_stats():
                 cur.execute("SELECT COUNT(*) as count FROM journals;")
                 total_journals = cur.fetchone()["count"]
 
+                cur.execute("SELECT COUNT(*) as count FROM research_projects;")
+                total_projects = cur.fetchone()["count"]
+
+                # Plan KPIs (Target: 290 Scopus, 80 International, 4 Industry)
+                cur.execute("""
+                    SELECT COUNT(DISTINCT p.id) as count 
+                    FROM publications p 
+                    JOIN publication_authors pa ON p.id = pa.publication_id 
+                    JOIN researchers r ON pa.researcher_id = r.id 
+                    WHERE r.is_internal = FALSE;
+                """)
+                inter_authors_count = cur.fetchone()["count"]
+                international_current = inter_authors_count
+                cur.execute("""
+                    SELECT COUNT(DISTINCT p.id) as count
+                    FROM research_projects p
+                    LEFT JOIN funding_sources fs ON p.funding_source_id = fs.id
+                    WHERE (fs.source_type = 'EXTERNAL' OR p.project_type = 'external_grant')
+                    AND (
+                        p.title_th ILIKE '%%อุตสาหกรรม%%' OR p.title_th ILIKE '%%บริษัท%%'
+                        OR fs.name ILIKE '%%บริษัท%%' OR fs.name ILIKE '%%จำกัด%%'
+                        OR fs.name ILIKE '%%อุตสาหกรรม%%'
+                    );
+                """)
+                industry_current = cur.fetchone()["count"]
+
                 # 2. Quartile distribution
                 cur.execute("""
                     SELECT 
@@ -1543,7 +1542,13 @@ def get_stats():
                 return jsonify({
                     "total_publications": total_publications,
                     "total_researchers": total_researchers,
+                    "total_projects": total_projects,
                     "total_journals": total_journals,
+                    "plan_targets": {
+                        "scopus": {"target": 290, "current": total_publications, "unit": "เรื่อง"},
+                        "international": {"target": 80, "current": international_current, "unit": "เรื่อง"},
+                        "industry": {"target": 4, "current": industry_current, "unit": "เรื่อง"}
+                    },
                     "quartile_distribution": quartiles,
                     "yearly_trend": yearly,
                     "top_sdgs": top_sdgs,
@@ -1858,6 +1863,641 @@ def get_departments():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/projects", methods=["GET"])
+def get_projects():
+    """Get research projects with filtering, pagination, and leader info."""
+    try:
+        q = request.args.get("q", "").strip()
+        year = request.args.get("year", "").strip()
+        status = request.args.get("status", "").strip()
+        source_type = request.args.get("source_type", "").strip()
+        limit = min(int(request.args.get("limit", 50)), 200)
+        offset = int(request.args.get("offset", 0))
+
+        where_clauses = ["1=1"]
+        params = []
+
+        if q:
+            where_clauses.append("(p.title_th ILIKE %s OR p.title_en ILIKE %s OR p.project_code ILIKE %s OR fs.name ILIKE %s)")
+            wildcard = f"%{q}%"
+            params.extend([wildcard, wildcard, wildcard, wildcard])
+
+        if year:
+            where_clauses.append("p.fiscal_year = %s")
+            params.append(int(year))
+
+        if status:
+            where_clauses.append("p.status ILIKE %s")
+            params.append(f"%{status}%")
+
+        if source_type:
+            where_clauses.append("fs.source_type ILIKE %s")
+            params.append(f"%{source_type}%")
+
+        where_sql = " AND ".join(where_clauses)
+
+        with get_db_connection(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                count_query = f"""
+                    SELECT COUNT(*) as total
+                    FROM research_projects p
+                    LEFT JOIN funding_sources fs ON p.funding_source_id = fs.id
+                    WHERE {where_sql}
+                """
+                cur.execute(count_query, params)
+                total = cur.fetchone()["total"]
+
+                data_query = f"""
+                    SELECT
+                        p.id,
+                        p.project_code,
+                        p.title_th,
+                        p.title_en,
+                        p.project_type,
+                        p.fiscal_year,
+                        p.start_date,
+                        p.end_date,
+                        p.budget,
+                        p.status,
+                        fs.name AS funding_source_name,
+                        fs.source_type AS funding_source_type,
+                        COALESCE(
+                            (
+                                SELECT json_agg(
+                                    json_build_object(
+                                        'researcher_id', r.id,
+                                        'full_name_th', r.full_name_th,
+                                        'role', pr.role
+                                    )
+                                )
+                                FROM project_researchers pr
+                                JOIN researchers r ON pr.researcher_id = r.id
+                                WHERE pr.project_id = p.id
+                            ),
+                            '[]'::json
+                        ) AS researchers
+                    FROM research_projects p
+                    LEFT JOIN funding_sources fs ON p.funding_source_id = fs.id
+                    WHERE {where_sql}
+                    ORDER BY p.fiscal_year DESC NULLS LAST, p.id DESC
+                    LIMIT %s OFFSET %s;
+                """
+                cur.execute(data_query, params + [limit, offset])
+                records = [dict(row) for row in cur.fetchall()]
+
+                return jsonify({
+                    "data": records,
+                    "total": total,
+                    "limit": limit,
+                    "offset": offset
+                })
+    except Exception as e:
+        logger.error(f"Error fetching projects: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================================
+# DYNAMIC KPI TARGETS & PLAN REPORTS (3 ตัวชี้วัดตามแผนงานคณะ)
+# ============================================================================
+
+@app.route("/api/kpi/stats", methods=["GET"])
+def get_kpi_stats():
+    """
+    Get dynamic KPI stats and targets for a specific fiscal year (or all).
+    Handles:
+      - Fiscal Year selector (e.g. 2569, 2568, 2567... or ALL)
+      - Customizable KPI Targets per year (stored in kpi_targets table)
+      - Scopus breakdown: Publication (Article) vs Proceeding (Conference/Book Chapter)
+      - International collaboration count
+      - Industry collaboration count
+    """
+    try:
+        year_param = request.args.get("year", "2569").strip()
+        is_all = year_param.upper() == "ALL" or year_param == "0"
+        
+        ce_year = None
+        be_year = 2569
+        if not is_all:
+            try:
+                y_val = int(year_param)
+                if y_val > 2500:
+                    be_year = y_val
+                    ce_year = y_val - 543
+                else:
+                    ce_year = y_val
+                    be_year = y_val + 543
+            except ValueError:
+                be_year = 2569
+                ce_year = 2026
+        else:
+            be_year = 0
+
+        with get_db_connection(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                # 1. Fetch configured target for this year from kpi_targets
+                cur.execute("SELECT * FROM kpi_targets WHERE fiscal_year = %s;", (be_year,))
+                target_row = cur.fetchone()
+                if not target_row:
+                    cur.execute("""
+                        INSERT INTO kpi_targets (fiscal_year, scopus_target, international_target, industry_target)
+                        VALUES (%s, 290, 80, 4)
+                        ON CONFLICT (fiscal_year) DO NOTHING;
+                    """, (be_year,))
+                    conn.commit()
+                    target_row = {"scopus_target": 290, "international_target": 80, "industry_target": 4}
+
+                scopus_target = target_row["scopus_target"]
+                international_target = target_row["international_target"]
+                industry_target = target_row["industry_target"]
+
+                # 2. Query Scopus publications and breakdown (Requirement 2)
+                year_filter_pub = ""
+                params_pub = []
+                if ce_year is not None:
+                    year_filter_pub = "WHERE EXTRACT(YEAR FROM p.published_date) = %s"
+                    params_pub = [ce_year]
+
+                query_pub = f"""
+                    SELECT 
+                        COUNT(*) as total,
+                        COUNT(CASE WHEN p.publication_type ILIKE '%%proceeding%%' OR p.publication_type ILIKE '%%conference%%' OR p.publication_type ILIKE '%%chapter%%' THEN 1 END) as proceeding_count,
+                        COUNT(CASE WHEN p.publication_type NOT ILIKE '%%proceeding%%' AND p.publication_type NOT ILIKE '%%conference%%' AND p.publication_type NOT ILIKE '%%chapter%%' THEN 1 END) as article_count
+                    FROM publications p
+                    {year_filter_pub};
+                """
+                cur.execute(query_pub, params_pub)
+                pub_res = cur.fetchone()
+                scopus_current = pub_res["total"]
+                article_count = pub_res["article_count"]
+                proceeding_count = pub_res["proceeding_count"]
+
+                # 3. Query International Collaboration count
+                query_inter = f"""
+                    SELECT COUNT(DISTINCT p.id) as count
+                    FROM publications p
+                    JOIN publication_authors pa ON p.id = pa.publication_id
+                    JOIN researchers r ON pa.researcher_id = r.id
+                    WHERE r.is_internal = FALSE
+                    {'AND EXTRACT(YEAR FROM p.published_date) = %s' if ce_year is not None else ''};
+                """
+                cur.execute(query_inter, params_pub)
+                inter_current = cur.fetchone()["count"]
+
+                # 4. Industry Collaboration count
+                query_industry = f"""
+                    SELECT COUNT(DISTINCT p.id) as count
+                    FROM research_projects p
+                    LEFT JOIN funding_sources fs ON p.funding_source_id = fs.id
+                    WHERE (fs.source_type = 'EXTERNAL' OR p.project_type = 'external_grant')
+                    AND (
+                        p.title_th ILIKE '%%อุตสาหกรรม%%' OR p.title_th ILIKE '%%บริษัท%%' OR 
+                        fs.name ILIKE '%%บริษัท%%' OR fs.name ILIKE '%%จำกัด%%' OR fs.name ILIKE '%%อุตสาหกรรม%%'
+                    )
+                    {'AND p.fiscal_year = %s' if ce_year is not None else ''};
+                """
+                cur.execute(query_industry, params_pub)
+                ind_count = cur.fetchone()["count"]
+                industry_current = ind_count
+
+                # Available fiscal years
+                cur.execute("""
+                    SELECT DISTINCT EXTRACT(YEAR FROM published_date)::int as y
+                    FROM publications
+                    WHERE published_date IS NOT NULL
+                    ORDER BY y DESC;
+                """)
+                ce_years = [r["y"] for r in cur.fetchall()]
+                available_years = [y + 543 for y in ce_years]
+                if 2569 not in available_years:
+                    available_years.insert(0, 2569)
+
+                return jsonify({
+                    "fiscal_year": "ALL" if is_all else be_year,
+                    "is_all": is_all,
+                    "targets": {
+                        "scopus": scopus_target,
+                        "international": international_target,
+                        "industry": industry_target
+                    },
+                    "scopus": {
+                        "current": scopus_current,
+                        "target": scopus_target,
+                        "percent": round((scopus_current / max(1, scopus_target)) * 100),
+                        "article_count": article_count,
+                        "proceeding_count": proceeding_count
+                    },
+                    "international": {
+                        "current": inter_current,
+                        "target": international_target,
+                        "percent": round((inter_current / max(1, international_target)) * 100)
+                    },
+                    "industry": {
+                        "current": industry_current,
+                        "target": industry_target,
+                        "percent": round((industry_current / max(1, industry_target)) * 100)
+                    },
+                    "available_years": available_years
+                })
+    except Exception as e:
+        logger.error(f"Error in get_kpi_stats: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/kpi/targets", methods=["POST"])
+def update_kpi_targets():
+    """Update customizable KPI targets for a specific fiscal year"""
+    try:
+        data = request.get_json() or {}
+        year_val = data.get("fiscal_year", 2569)
+        be_year = int(year_val) if str(year_val).upper() != "ALL" else 0
+        scopus_target = int(data.get("scopus_target", 290))
+        international_target = int(data.get("international_target", 80))
+        industry_target = int(data.get("industry_target", 4))
+        notes = data.get("notes", "")
+
+        with get_db_connection(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO kpi_targets (fiscal_year, scopus_target, international_target, industry_target, notes, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (fiscal_year) DO UPDATE SET
+                        scopus_target = EXCLUDED.scopus_target,
+                        international_target = EXCLUDED.international_target,
+                        industry_target = EXCLUDED.industry_target,
+                        notes = EXCLUDED.notes,
+                        updated_at = NOW();
+                """, (be_year, scopus_target, international_target, industry_target, notes))
+                conn.commit()
+
+        return jsonify({"success": True, "message": f"Updated KPI targets for {be_year}"})
+    except Exception as e:
+        logger.error(f"Error updating KPI targets: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/kpi/report", methods=["GET"])
+def get_kpi_report():
+    """
+    Fetch granular report data matching exact Plan Dept Requirements (3.1, 3.2, 3.3).
+    """
+    try:
+        report_type = request.args.get("type", "scopus").lower()
+        year_param = request.args.get("year", "2569").strip()
+        q = request.args.get("q", "").strip()
+        limit = min(int(request.args.get("limit", 50)), 200)
+        offset = int(request.args.get("offset", 0))
+
+        is_all = year_param.upper() == "ALL" or year_param == "0"
+        ce_year = None
+        if not is_all:
+            try:
+                y = int(year_param)
+                ce_year = y - 543 if y > 2500 else y
+            except ValueError:
+                ce_year = 2026
+
+        with get_db_connection(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                if report_type == "scopus":
+                    # Requirement 3.1: Scopus Publications
+                    where_clauses = ["1=1"]
+                    params = []
+                    if ce_year:
+                        where_clauses.append("EXTRACT(YEAR FROM p.published_date) = %s")
+                        params.append(ce_year)
+                    if q:
+                        where_clauses.append("(p.title_th ILIKE %s OR p.title_en ILIKE %s OR j.journal_name ILIKE %s)")
+                        w = f"%{q}%"
+                        params.extend([w, w, w])
+
+                    where_sql = " AND ".join(where_clauses)
+                    
+                    count_q = f"SELECT COUNT(*) as total FROM publications p LEFT JOIN journals j ON p.journal_id = j.id WHERE {where_sql};"
+                    cur.execute(count_q, params)
+                    total = cur.fetchone()["total"]
+
+                    data_q = f"""
+                        SELECT 
+                            p.id,
+                            COALESCE(p.title_th, p.title_en) as title,
+                            COALESCE(j.journal_name, 'Conference/Proceedings') as journal_conference,
+                            COALESCE(p.issue_number, '-') as issue,
+                            COALESCE(p.volume, '-') as volume,
+                            COALESCE(p.page_range, '-') as pages,
+                            CASE 
+                                WHEN p.publication_type ILIKE '%%proceeding%%' OR p.publication_type ILIKE '%%conference%%' OR p.publication_type ILIKE '%%chapter%%'
+                                THEN 'บทความประชุมวิชาการ (Proceeding)'
+                                ELSE 'บทความวารสาร (Publication)'
+                            END as category,
+                            COALESCE(
+                                (
+                                    SELECT COALESCE(r.academic_position || ' ', '') || r.full_name_th
+                                    FROM publication_authors pa
+                                    JOIN researchers r ON pa.researcher_id = r.id
+                                    WHERE pa.publication_id = p.id AND r.is_internal = TRUE
+                                    ORDER BY pa.author_order ASC, pa.id ASC
+                                    LIMIT 1
+                                ),
+                                (
+                                    SELECT COALESCE(r.academic_position || ' ', '') || r.full_name_th
+                                    FROM publication_authors pa
+                                    JOIN researchers r ON pa.researcher_id = r.id
+                                    WHERE pa.publication_id = p.id
+                                    ORDER BY pa.author_order ASC, pa.id ASC
+                                    LIMIT 1
+                                ),
+                                'ไม่ระบุชื่อผู้วิจัย'
+                            ) as author_name,
+                            EXTRACT(YEAR FROM p.published_date)::int as year
+                        FROM publications p
+                        LEFT JOIN journals j ON p.journal_id = j.id
+                        WHERE {where_sql}
+                        ORDER BY p.published_date DESC NULLS LAST, p.id DESC
+                        LIMIT %s OFFSET %s;
+                    """
+                    cur.execute(data_q, params + [limit, offset])
+                    records = [dict(r) for r in cur.fetchall()]
+
+                elif report_type == "international":
+                    # Requirement 3.2: International Collaboration
+                    where_clauses = ["r_ext.is_internal = FALSE"]
+                    params = []
+                    if ce_year:
+                        where_clauses.append("EXTRACT(YEAR FROM p.published_date) = %s")
+                        params.append(ce_year)
+                    if q:
+                        where_clauses.append("(p.title_th ILIKE %s OR p.title_en ILIKE %s OR r_ext.full_name_en ILIKE %s)")
+                        w = f"%{q}%"
+                        params.extend([w, w, w])
+
+                    where_sql = " AND ".join(where_clauses)
+
+                    count_q = f"""
+                        SELECT COUNT(DISTINCT p.id) as total
+                        FROM publications p
+                        JOIN publication_authors pa_ext ON p.id = pa_ext.publication_id
+                        JOIN researchers r_ext ON pa_ext.researcher_id = r_ext.id
+                        WHERE {where_sql};
+                    """
+                    cur.execute(count_q, params)
+                    total = cur.fetchone()["total"]
+
+                    data_q = f"""
+                        SELECT 
+                            p.id,
+                            COALESCE(p.title_th, p.title_en) as title,
+                            COALESCE(j.journal_name, 'International Source') as journal,
+                            COALESCE(
+                                (
+                                    SELECT COALESCE(r.academic_position || ' ', '') || r.full_name_th
+                                    FROM publication_authors pa
+                                    JOIN researchers r ON pa.researcher_id = r.id
+                                    WHERE pa.publication_id = p.id AND r.is_internal = TRUE
+                                    ORDER BY pa.author_order ASC, pa.id ASC
+                                    LIMIT 1
+                                ),
+                                'คณาจารย์ คณะวิทยาศาสตร์ประยุกต์'
+                            ) as lead_author,
+                            COALESCE(
+                                string_agg(DISTINCT r_ext.full_name_en, '; '),
+                                'International Co-author'
+                            ) as inter_author,
+                            'สถาบัน/มหาวิทยาลัยในต่างประเทศ (International Affiliate)' as inter_address,
+                            'ต่างประเทศ (International)' as publisher,
+                            EXTRACT(YEAR FROM p.published_date)::int as year
+                        FROM publications p
+                        JOIN publication_authors pa_ext ON p.id = pa_ext.publication_id
+                        JOIN researchers r_ext ON pa_ext.researcher_id = r_ext.id
+                        LEFT JOIN journals j ON p.journal_id = j.id
+                        WHERE {where_sql}
+                        GROUP BY p.id, j.journal_name
+                        ORDER BY p.published_date DESC NULLS LAST, p.id DESC
+                        LIMIT %s OFFSET %s;
+                    """
+                    cur.execute(data_q, params + [limit, offset])
+                    records = [dict(r) for r in cur.fetchall()]
+
+                else:
+                    # Requirement 3.3: Industry Collaboration
+                    where_clauses = ["1=1"]
+                    params = []
+                    if ce_year:
+                        where_clauses.append("p.fiscal_year = %s")
+                        params.append(ce_year)
+                    if q:
+                        where_clauses.append("(p.title_th ILIKE %s OR p.title_en ILIKE %s OR fs.name ILIKE %s)")
+                        w = f"%{q}%"
+                        params.extend([w, w, w])
+
+                    where_sql = " AND ".join(where_clauses)
+                    
+                    data_q = f"""
+                        SELECT 
+                            p.id,
+                            COALESCE(
+                                (
+                                    SELECT r.full_name_th
+                                    FROM project_researchers pr
+                                    JOIN researchers r ON pr.researcher_id = r.id
+                                    WHERE pr.project_id = p.id
+                                    LIMIT 1
+                                ),
+                                'หัวหน้าโครงการวิจัย คณะวิทยาศาสตร์ประยุกต์'
+                            ) as lead_author,
+                            COALESCE(p.title_th, p.title_en) as title,
+                            COALESCE(p.project_code, 'โครงการวิจัยและบริการวิชาการ') as journal,
+                            COALESCE(fs.name, 'ภาคอุตสาหกรรม/บริษัทเอกชน') as industry_org,
+                            p.fiscal_year as year
+                        FROM research_projects p
+                        LEFT JOIN funding_sources fs ON p.funding_source_id = fs.id
+                        WHERE (fs.source_type = 'EXTERNAL' OR p.project_type = 'external_grant')
+                        AND {where_sql}
+                        ORDER BY p.fiscal_year DESC NULLS LAST, p.id DESC
+                        LIMIT %s OFFSET %s;
+                    """
+                    cur.execute(data_q, params + [limit, offset])
+                    records = [dict(r) for r in cur.fetchall()]
+                    total = len(records)
+
+                return jsonify({
+                    "data": records,
+                    "total": total,
+                    "limit": limit,
+                    "offset": offset,
+                    "report_type": report_type,
+                    "year": year_param
+                })
+    except Exception as e:
+        logger.error(f"Error fetching KPI report: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/kpi/export", methods=["GET"])
+def export_kpi_excel():
+    """Export standard Excel sheet for Plan Department submission (.xlsx)"""
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from io import BytesIO
+
+        report_type = request.args.get("type", "scopus").lower()
+        year_param = request.args.get("year", "2569").strip()
+        
+        wb = openpyxl.Workbook()
+        ws = wb.active
+
+        header_fill = PatternFill(start_color="EA580C", end_color="EA580C", fill_type="solid")
+        header_font = Font(name="Prompt", size=11, bold=True, color="FFFFFF")
+        center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+        with get_db_connection(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                if report_type == "scopus":
+                    ws.title = f"3.1_Scopus_{year_param}"
+                    headers = [
+                        "ลำดับ",
+                        "ชื่อเจ้าของบทความ (ชื่อนามสกุล+ตำแหน่งวิชาการ)",
+                        "ชื่อบทความ (Article Title)",
+                        "ชื่อวารสาร/งานประชุม (Journal/Conference)",
+                        "ฉบับที่ (Number)",
+                        "ปีที่ (Volume)",
+                        "หน้าที่ตีพิมพ์ (Pages)",
+                        "ประเภท (Publication/Proceeding)"
+                    ]
+                    ws.append(headers)
+
+                    cur.execute("""
+                        SELECT 
+                            COALESCE(
+                                (
+                                    SELECT COALESCE(r.academic_position || ' ', '') || r.full_name_th
+                                    FROM publication_authors pa
+                                    JOIN researchers r ON pa.researcher_id = r.id
+                                    WHERE pa.publication_id = p.id AND r.is_internal = TRUE
+                                    ORDER BY pa.author_order ASC LIMIT 1
+                                ),
+                                'อาจารย์/นักวิจัย มจพ.'
+                            ) as author_name,
+                            COALESCE(p.title_th, p.title_en) as title,
+                            COALESCE(j.journal_name, 'Conference Proceeding') as journal,
+                            COALESCE(p.issue_number, '-') as issue,
+                            COALESCE(p.volume, '-') as volume,
+                            COALESCE(p.page_range, '-') as pages,
+                            CASE 
+                                WHEN p.publication_type ILIKE '%%proceeding%%' OR p.publication_type ILIKE '%%conference%%'
+                                THEN 'บทความประชุมวิชาการ (Proceeding)'
+                                ELSE 'บทความวารสาร (Publication)'
+                            END as category
+                        FROM publications p
+                        LEFT JOIN journals j ON p.journal_id = j.id
+                        ORDER BY p.published_date DESC NULLS LAST;
+                    """)
+                    rows = cur.fetchall()
+                    for idx, r in enumerate(rows, 1):
+                        ws.append([idx, r["author_name"], r["title"], r["journal"], r["issue"], r["volume"], r["pages"], r["category"]])
+
+                elif report_type == "international":
+                    ws.title = f"3.2_International_{year_param}"
+                    headers = [
+                        "ลำดับ",
+                        "ชื่อบทความ (Article Title)",
+                        "ชื่อวารสาร (Journal Name)",
+                        "ชื่อเจ้าของบทความ (ชื่อนามสกุล+ตำแหน่งวิชาการ)",
+                        "Inter Author (ชื่อนักวิจัยต่างชาติ)",
+                        "Inter (ที่อยู่นักวิจัยต่างชาติ)",
+                        "Publisher (ในประเทศ/ต่างประเทศ)"
+                    ]
+                    ws.append(headers)
+
+                    cur.execute("""
+                        SELECT 
+                            COALESCE(p.title_th, p.title_en) as title,
+                            COALESCE(j.journal_name, 'International Journal') as journal,
+                            COALESCE(
+                                (
+                                    SELECT COALESCE(r.academic_position || ' ', '') || r.full_name_th
+                                    FROM publication_authors pa
+                                    JOIN researchers r ON pa.researcher_id = r.id
+                                    WHERE pa.publication_id = p.id AND r.is_internal = TRUE
+                                    ORDER BY pa.author_order ASC LIMIT 1
+                                ),
+                                'อาจารย์/นักวิจัย มจพ.'
+                            ) as lead_author,
+                            COALESCE(string_agg(DISTINCT r_ext.full_name_en, '; '), 'International Researcher') as inter_author
+                        FROM publications p
+                        JOIN publication_authors pa_ext ON p.id = pa_ext.publication_id
+                        JOIN researchers r_ext ON pa_ext.researcher_id = r_ext.id
+                        LEFT JOIN journals j ON p.journal_id = j.id
+                        WHERE r_ext.is_internal = FALSE
+                        GROUP BY p.id, j.journal_name
+                        ORDER BY p.published_date DESC NULLS LAST;
+                    """)
+                    rows = cur.fetchall()
+                    for idx, r in enumerate(rows, 1):
+                        ws.append([idx, r["title"], r["journal"], r["lead_author"], r["inter_author"], "สถาบันการศึกษา/วิจัยต่างประเทศ", "ต่างประเทศ (International)"])
+
+                else:
+                    ws.title = f"3.3_Industry_{year_param}"
+                    headers = [
+                        "ลำดับ",
+                        "ชื่อเจ้าของบทความ (ชื่อนามสกุล+ตำแหน่งวิชาการ)",
+                        "ชื่อบทความ/โครงการวิจัย",
+                        "ชื่อวารสาร/รหัสโครงการ",
+                        "ชื่อหน่วยงานภาคอุตสาหกรรม (ภาครัฐและเอกชนในประเทศและต่างประเทศ)"
+                    ]
+                    ws.append(headers)
+
+                    cur.execute("""
+                        SELECT 
+                            COALESCE(
+                                (
+                                    SELECT r.full_name_th
+                                    FROM project_researchers pr
+                                    JOIN researchers r ON pr.researcher_id = r.id
+                                    WHERE pr.project_id = p.id LIMIT 1
+                                ),
+                                'หัวหน้าโครงการวิจัย คณะวิทยาศาสตร์ประยุกต์'
+                            ) as lead_author,
+                            COALESCE(p.title_th, p.title_en) as title,
+                            COALESCE(p.project_code, 'งานวิจัยภาคอุตสาหกรรม') as journal,
+                            COALESCE(fs.name, 'ภาคอุตสาหกรรมและเอกชน') as industry_org
+                        FROM research_projects p
+                        LEFT JOIN funding_sources fs ON p.funding_source_id = fs.id
+                        WHERE fs.source_type = 'EXTERNAL' OR p.project_type = 'external_grant'
+                        ORDER BY p.fiscal_year DESC NULLS LAST;
+                    """)
+                    rows = cur.fetchall()
+                    for idx, r in enumerate(rows, 1):
+                        ws.append([idx, r["lead_author"], r["title"], r["journal"], r["industry_org"]])
+
+        # Format header styles
+        for col_idx in range(1, len(headers) + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center_align
+
+        for col in ws.columns:
+            max_len = max(len(str(cell.value or '')) for cell in col)
+            col_letter = openpyxl.utils.get_column_letter(col[0].column)
+            ws.column_dimensions[col_letter].width = min(max(max_len + 4, 12), 45)
+
+        stream = BytesIO()
+        wb.save(stream)
+        stream.seek(0)
+
+        filename = f"KMUTNB_Plan_KPI_{report_type}_{year_param}.xlsx"
+        return send_file(
+            stream,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            as_attachment=True,
+            download_name=filename
+        )
+    except Exception as e:
+        logger.error(f"Error exporting KPI excel: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/journals", methods=["GET"])
 def get_journals():
     """Get all journals with publication counts"""
@@ -1908,16 +2548,8 @@ def get_sdg_goals():
 
 @app.route("/api/records", methods=["GET"])
 def get_legacy_records():
-    """Get all academic papers from legacy table"""
-    try:
-        with get_db_connection(DATABASE_URL) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT * FROM academic_papers ORDER BY uploaded_at DESC LIMIT 200;")
-                records = cur.fetchall()
-                return jsonify([dict(row) for row in records])
-    except Exception as e:
-        logger.error(f"Error fetching legacy records: {e}")
-        return jsonify({"error": str(e)}), 500
+    """Redirect/alias to publications for backwards compatibility"""
+    return get_publications()
 
 
 # ============================================================================
